@@ -1,0 +1,62 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build workspace",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--workspace"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": ["$rustc"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cargo build tray",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "-p", "dell-controller-tray"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "cargo build cli",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "-p", "dellctl"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "cargo build lab",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "-p", "dell-lab"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}
+

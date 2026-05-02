@@ -1,0 +1,56 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tray: Dell Controller",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\target\\debug\\dell-controller-tray.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "externalTerminal",
+      "preLaunchTask": "cargo build tray"
+    },
+    {
+      "name": "CLI: monitors",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\target\\debug\\dellctl.exe",
+      "args": ["monitors"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "cargo build cli"
+    },
+    {
+      "name": "CLI: get brightness",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\target\\debug\\dellctl.exe",
+      "args": ["get", "0", "brightness"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "cargo build cli"
+    },
+    {
+      "name": "CLI: snapshot",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\target\\debug\\dellctl.exe",
+      "args": ["snapshot", "0"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "cargo build cli"
+    },
+    {
+      "name": "Lab: probe",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\target\\debug\\dell-lab.exe",
+      "args": ["probe", "0"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "cargo build lab"
+    }
+  ]
+}
+

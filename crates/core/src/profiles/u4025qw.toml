@@ -1,0 +1,75 @@
+[identity]
+manufacturer = "DEL"
+model = "U4025QW"
+
+[[controls]]
+name = "brightness"
+label = "Brightness"
+vcp = "0x10"
+kind = "continuous"
+safe_write = true
+
+[[controls]]
+name = "contrast"
+label = "Contrast"
+vcp = "0x12"
+kind = "continuous"
+safe_write = true
+
+[[controls]]
+name = "input"
+label = "Input Source"
+vcp = "0x60"
+kind = "enum"
+safe_write = true
+
+[controls.values]
+"0x0F" = "DisplayPort 1"
+"0x11" = "HDMI"
+"0x19" = "USB-C"
+
+[[controls]]
+name = "power"
+label = "Power Mode"
+vcp = "0xD6"
+kind = "enum"
+safe_write = true
+
+[controls.values]
+"0x01" = "On"
+"0x04" = "Off"
+"0x05" = "Power saving"
+
+[[controls]]
+name = "smart-hdr"
+label = "Smart HDR"
+vcp = "0xE2"
+kind = "enum"
+safe_write = false
+
+[controls.values]
+"0x00" = "Off"
+"0x02" = "Desktop"
+"0x04" = "Movie HDR"
+"0x0C" = "Game HDR"
+"0x0D" = "DisplayHDR"
+
+[[controls]]
+name = "hardware-kvm"
+label = "Hardware KVM / USB Routing"
+vcp = "0xE9"
+kind = "enum"
+safe_write = false
+
+[[quick_actions]]
+name = "usb-c"
+label = "Switch to USB-C"
+control = "input"
+value = "0x19"
+
+[[quick_actions]]
+name = "displayport"
+label = "Switch to DisplayPort"
+control = "input"
+value = "0x0F"
+

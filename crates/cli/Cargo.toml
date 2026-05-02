@@ -1,0 +1,19 @@
+[package]
+name = "dellctl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dell-controller-core = { path = "../core" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[bin]]
+name = "dellctl"
+path = "src/main.rs"
+
