@@ -9,7 +9,7 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "console": "externalTerminal",
-      "preLaunchTask": "cargo build tray"
+      "preLaunchTask": "cargo build outputs"
     },
     {
       "name": "CLI: monitors",
@@ -19,7 +19,7 @@
       "args": ["monitors"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "preLaunchTask": "cargo build cli"
+      "preLaunchTask": "cargo build outputs"
     },
     {
       "name": "CLI: get brightness",
@@ -29,7 +29,7 @@
       "args": ["get", "0", "brightness"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "preLaunchTask": "cargo build cli"
+      "preLaunchTask": "cargo build outputs"
     },
     {
       "name": "CLI: snapshot",
@@ -39,7 +39,7 @@
       "args": ["snapshot", "0"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "preLaunchTask": "cargo build cli"
+      "preLaunchTask": "cargo build outputs"
     },
     {
       "name": "Lab: probe",
@@ -49,8 +49,7 @@
       "args": ["probe", "0"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
-      "preLaunchTask": "cargo build lab"
+      "preLaunchTask": "cargo build outputs"
     }
   ]
 }
-
