@@ -1,0 +1,54 @@
+export component InputOptionButton inherits Rectangle {
+    in property <string> label;
+    in property <image> port-icon;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    min-height: 52px;
+    horizontal-stretch: 1;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: selected ? #6ea4ff : #d0d6dd;
+    background: selected ? #ebf4ff : #ffffff;
+    opacity: enabled ? 1 : 0.55;
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        alignment: center;
+
+        Image {
+            source: selected ? @image-url("../assets/icons/indicator_selected_ui.png") : @image-url("../assets/icons/indicator_unselected_ui.png");
+            width: 24px;
+            height: 24px;
+            image-fit: contain;
+        }
+
+        Image {
+            source: root.port-icon;
+            width: root.label == "TB" ? 24px : 36px;
+            height: root.label == "TB" ? 24px : 36px;
+            image-fit: contain;
+        }
+
+        Text {
+            text: root.label;
+            vertical-alignment: center;
+            color: #161616;
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}

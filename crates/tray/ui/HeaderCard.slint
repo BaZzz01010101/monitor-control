@@ -1,0 +1,74 @@
+import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+export component HeaderCard inherits Rectangle {
+    in property <string> monitor-title;
+    in property <string> input-summary;
+    in property <string> hdr-status;
+    callback refresh;
+
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: #d7dbe1;
+    background: #ffffff;
+
+    HorizontalBox {
+        spacing: 18px;
+        padding: 18px;
+        alignment: center;
+
+        Image {
+            source: @image-url("../assets/icons/monitor_ui.png");
+            width: 112px;
+            height: 72px;
+            image-fit: contain;
+        }
+
+        VerticalBox {
+            spacing: 6px;
+            padding: 0px;
+            vertical-stretch: 0;
+            horizontal-stretch: 1;
+
+            HorizontalBox {
+                spacing: 12px;
+                padding: 0px;
+                alignment: center;
+
+                Text {
+                    text: root.monitor-title;
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: #111111;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    width: 1px;
+                    height: 20px;
+                    background: #d6d6d6;
+                }
+
+                Text {
+                    text: root.input-summary;
+                    font-size: 13px;
+                    color: #303030;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: root.hdr-status;
+                font-size: 13px;
+                color: #1f1f1f;
+                vertical-alignment: center;
+            }
+        }
+
+        Button {
+            text: "Refresh";
+            icon: @image-url("../assets/icons/refresh_ui.png");
+            icon-size: 22px;
+            clicked => { root.refresh(); }
+        }
+    }
+}

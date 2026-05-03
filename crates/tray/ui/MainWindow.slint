@@ -1,0 +1,87 @@
+import { VerticalBox } from "std-widgets.slint";
+import { HeaderCard } from "HeaderCard.slint";
+import { PictureCard } from "PictureCard.slint";
+import { InputCard } from "InputCard.slint";
+import { StatusBar } from "StatusBar.slint";
+
+export component MainWindow inherits Window {
+    title: "Dell Controller";
+    width: 760px;
+    height: 460px;
+    background: #f7fafd;
+
+    in property <string> monitor-title: "No DDC/CI monitor detected";
+    in property <string> input-summary: "Input";
+    in property <string> hdr-status: "Windows HDR: unavailable";
+    in-out property <int> brightness-value: 0;
+    in property <int> brightness-maximum: 100;
+    in property <bool> brightness-enabled: false;
+    in-out property <int> contrast-value: 0;
+    in property <int> contrast-maximum: 100;
+    in property <bool> contrast-enabled: false;
+    in property <int> selected-input: 0;
+    in property <bool> input-enabled: false;
+    in property <string> status-text: "Ready";
+
+    callback refresh();
+    callback brightness-preview(int);
+    callback brightness-commit(int);
+    callback contrast-preview(int);
+    callback contrast-commit(int);
+    callback select-input(int);
+
+    VerticalBox {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        spacing: 14px;
+        padding: 16px;
+
+        HeaderCard {
+            monitor-title: root.monitor-title;
+            input-summary: root.input-summary;
+            hdr-status: root.hdr-status;
+            refresh => { root.refresh(); }
+        }
+
+        Text {
+            text: "Picture";
+            font-size: 18px;
+            font-weight: 600;
+            color: #161616;
+        }
+
+        PictureCard {
+            brightness-value <=> root.brightness-value;
+            brightness-maximum: root.brightness-maximum;
+            brightness-enabled: root.brightness-enabled;
+            contrast-value <=> root.contrast-value;
+            contrast-maximum: root.contrast-maximum;
+            contrast-enabled: root.contrast-enabled;
+            brightness-preview(value) => { root.brightness-preview(value); }
+            brightness-commit(value) => { root.brightness-commit(value); }
+            contrast-preview(value) => { root.contrast-preview(value); }
+            contrast-commit(value) => { root.contrast-commit(value); }
+        }
+
+        Text {
+            text: "KVM / Input";
+            font-size: 18px;
+            font-weight: 600;
+            color: #161616;
+        }
+
+        InputCard {
+            selected-input: root.selected-input;
+            enabled: root.input-enabled;
+            select-input(value) => { root.select-input(value); }
+        }
+
+        Rectangle { vertical-stretch: 1; background: transparent; }
+
+        StatusBar {
+            text: root.status-text;
+        }
+    }
+}

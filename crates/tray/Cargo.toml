@@ -7,8 +7,14 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 dell-controller-core = { path = "../core" }
-native-windows-gui = { version = "1.0", default-features = false, features = ["animation-timer", "cursor", "frame", "high-dpi", "image-decoder", "menu", "message-window", "rich-textbox", "trackbar", "tray-notification"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+raw-window-handle = "0.6"
+slint = { version = "1.16.1", features = ["raw-window-handle-06"] }
+tray-icon = "0.23.1"
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+slint-build = "1.16.1"
 
 [[bin]]
 name = "dell-controller-tray"

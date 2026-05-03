@@ -1,0 +1,165 @@
+component StepperButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    border-width: 1px;
+    border-color: #d0d0d0;
+    background: enabled ? #ffffff : #f2f2f2;
+
+    Image {
+        source: root.icon;
+        width: 13px;
+        height: 13px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        image-fit: contain;
+        opacity: root.enabled ? 1 : 0.45;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component ValueEditor inherits Rectangle {
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    in-out property <int> current-value: 0;
+    in property <bool> enabled: true;
+
+    callback preview(int);
+    callback commit(int);
+
+    width: 80px;
+    height: 38px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: #d0d0d0;
+    background: enabled ? #ffffff : #f2f2f2;
+    clip: true;
+
+    function clamp-value(value: int) -> int {
+        min(root.maximum, max(root.minimum, value))
+    }
+
+    function set-committed-value(value: int) {
+        let clamped = root.clamp-value(value);
+        root.current-value = clamped;
+        text-input.text = clamped;
+        root.commit(clamped);
+    }
+
+    function set-preview-value(value: int) {
+        let clamped = root.clamp-value(value);
+        root.current-value = clamped;
+        text-input.text = clamped;
+        root.preview(clamped);
+    }
+
+    changed current-value => {
+        if text-input.text != root.current-value {
+            text-input.text = root.current-value;
+        }
+    }
+
+    TouchArea {
+        enabled: root.enabled;
+        scroll-event(event) => {
+            if event.delta-y > 0 {
+                root.set-committed-value(root.current-value + 1);
+                return accept;
+            }
+
+            if event.delta-y < 0 {
+                root.set-committed-value(root.current-value - 1);
+                return accept;
+            }
+
+            reject
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0px;
+        padding: 0px;
+
+        Rectangle {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            background: transparent;
+
+            text-input := TextInput {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                text: root.current-value;
+                enabled: root.enabled;
+                single-line: true;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                accepted => {
+                    if self.text.is-float() {
+                        root.set-committed-value(self.text.to-float());
+                    } else {
+                        self.text = root.current-value;
+                    }
+                }
+                edited => {
+                    if self.text.is-float() {
+                        let value = root.clamp-value(self.text.to-float());
+                        root.current-value = value;
+                        root.preview(value);
+                    }
+                }
+                key-pressed(event) => {
+                    if event.text == Key.UpArrow {
+                        root.set-committed-value(root.current-value + 1);
+                        return accept;
+                    }
+
+                    if event.text == Key.DownArrow {
+                        root.set-committed-value(root.current-value - 1);
+                        return accept;
+                    }
+
+                    reject
+                }
+            }
+        }
+
+        Rectangle {
+            width: 1px;
+            background: #d0d0d0;
+        }
+
+        Rectangle {
+            width: 28px;
+            background: transparent;
+
+            VerticalLayout {
+                spacing: 0px;
+                padding: 0px;
+
+                StepperButton {
+                    icon: @image-url("../assets/icons/arrow_up_ui.png");
+                    enabled: root.enabled;
+                    clicked => { root.set-committed-value(root.current-value + 1); }
+                }
+
+                Rectangle {
+                    height: 1px;
+                    background: #d0d0d0;
+                }
+
+                StepperButton {
+                    icon: @image-url("../assets/icons/arrow_down_ui.png");
+                    enabled: root.enabled;
+                    clicked => { root.set-committed-value(root.current-value - 1); }
+                }
+            }
+        }
+    }
+}

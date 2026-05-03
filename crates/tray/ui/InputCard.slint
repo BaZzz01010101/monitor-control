@@ -1,0 +1,42 @@
+import { HorizontalBox } from "std-widgets.slint";
+import { InputOptionButton } from "InputOptionButton.slint";
+
+export component InputCard inherits Rectangle {
+    in property <int> selected-input: 0;
+    in property <bool> enabled: true;
+    callback select-input(int);
+
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: #d7dbe1;
+    background: #ffffff;
+
+    HorizontalBox {
+        spacing: 12px;
+        padding: 16px;
+
+        InputOptionButton {
+            label: "TB";
+            port-icon: @image-url("../assets/icons/thunderbolt_ui.png");
+            selected: root.selected-input == 1;
+            enabled: root.enabled;
+            clicked => { root.select-input(1); }
+        }
+
+        InputOptionButton {
+            label: "DP";
+            port-icon: @image-url("../assets/icons/displayport_ui.png");
+            selected: root.selected-input == 2;
+            enabled: root.enabled;
+            clicked => { root.select-input(2); }
+        }
+
+        InputOptionButton {
+            label: "HDMI";
+            port-icon: @image-url("../assets/icons/hdmi_ui.png");
+            selected: root.selected-input == 3;
+            enabled: root.enabled;
+            clicked => { root.select-input(3); }
+        }
+    }
+}

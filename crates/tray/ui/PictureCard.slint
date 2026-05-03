@@ -1,0 +1,51 @@
+import { VerticalBox } from "std-widgets.slint";
+import { ValueControl } from "ValueControl.slint";
+
+export component PictureCard inherits Rectangle {
+    in-out property <int> brightness-value: 0;
+    in property <int> brightness-maximum: 100;
+    in property <bool> brightness-enabled: true;
+    in-out property <int> contrast-value: 0;
+    in property <int> contrast-maximum: 100;
+    in property <bool> contrast-enabled: true;
+
+    callback brightness-preview(int);
+    callback brightness-commit(int);
+    callback contrast-preview(int);
+    callback contrast-commit(int);
+
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: #d7dbe1;
+    background: #ffffff;
+
+    VerticalBox {
+        spacing: 14px;
+        padding: 16px;
+
+        ValueControl {
+            label: "Brightness";
+            icon: @image-url("../assets/icons/brightness_ui.png");
+            current-value <=> root.brightness-value;
+            maximum-value: root.brightness-maximum;
+            enabled: root.brightness-enabled;
+            preview(value) => { root.brightness-preview(value); }
+            commit(value) => { root.brightness-commit(value); }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #d7dbe1;
+        }
+
+        ValueControl {
+            label: "Contrast";
+            icon: @image-url("../assets/icons/contrast_ui.png");
+            current-value <=> root.contrast-value;
+            maximum-value: root.contrast-maximum;
+            enabled: root.contrast-enabled;
+            preview(value) => { root.contrast-preview(value); }
+            commit(value) => { root.contrast-commit(value); }
+        }
+    }
+}
