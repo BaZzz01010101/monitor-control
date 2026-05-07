@@ -125,4 +125,19 @@ mod tests {
 
         assert!(source.contains("width: 570px;"));
     }
+
+    #[test]
+    fn input_option_buttons_are_focusable_and_keyboard_activatable() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("ui")
+                .join("InputOptionButton.slint"),
+        )
+        .expect("failed to read InputOptionButton.slint");
+
+        assert!(source.contains("FocusScope"));
+        assert!(source.contains("forward-focus:"));
+        assert!(source.contains("accessible-role: button;"));
+        assert!(source.contains("key-pressed(event)"));
+    }
 }

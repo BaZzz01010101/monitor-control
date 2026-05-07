@@ -7,10 +7,18 @@ export component InputOptionButton inherits Rectangle {
 
     min-height: 52px;
     horizontal-stretch: 1;
+    accessible-label: root.label;
+    accessible-role: button;
+    accessible-action-default => {
+        if (root.enabled) {
+            root.clicked();
+        }
+    }
+    forward-focus: focus-scope;
     border-radius: 8px;
     border-width: 1px;
-    border-color: selected ? #6ea4ff : #d0d6dd;
-    background: selected ? #ebf4ff : #ffffff;
+    border-color: selected ? #6ea4ff : (focus-scope.has-focus ? #8ab2ff : #d0d6dd);
+    background: selected ? #ebf4ff : ((touch.has-hover || focus-scope.has-focus) ? #f7fbff : #ffffff);
     opacity: enabled ? 1 : 0.55;
 
     HorizontalLayout {
@@ -65,7 +73,24 @@ export component InputOptionButton inherits Rectangle {
     }
 
     touch := TouchArea {
+        width: 100%;
+        height: 100%;
         enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+
+    focus-scope := FocusScope {
+        width: 0px;
+        height: 0px;
+        enabled: root.enabled;
+
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+
+            return reject;
+        }
     }
 }
