@@ -1,4 +1,4 @@
-import { HorizontalBox, Slider } from "std-widgets.slint";
+import { Slider } from "std-widgets.slint";
 import { ValueEditor } from "ValueEditor.slint";
 
 export component ValueControl inherits Rectangle {
@@ -12,47 +12,82 @@ export component ValueControl inherits Rectangle {
     callback commit(int);
 
     background: transparent;
-    min-height: 44px;
+    min-height: 52px;
 
-    HorizontalBox {
+    HorizontalLayout {
         spacing: 12px;
-        padding: 0px;
-        alignment: center;
+        padding-left: 10px;
+        padding-right: 10px;
 
-        Image {
-            source: root.icon;
-            width: 24px;
-            height: 24px;
-            image-fit: contain;
-            opacity: root.enabled ? 1 : 0.45;
-        }
+        Rectangle {
+            width: 120px;
+            background: transparent;
 
-        Text {
-            width: 110px;
-            text: root.label;
-            vertical-alignment: center;
-            color: root.enabled ? #1a1a1a : #8b8b8b;
-        }
+            HorizontalLayout {
+                spacing: 15px;
+                padding: 0px;
 
-        slider := Slider {
-            enabled: root.enabled;
-            minimum: 0;
-            maximum: root.maximum-value;
-            value: root.current-value;
-            changed => {
-                root.current-value = self.value;
-                root.preview(root.current-value);
+                VerticalLayout {
+                    alignment: center;
+                    padding-top: 2px;
+
+                    Image {
+                        padding-top: 2px;
+                        source: root.icon;
+                        width: 18px;
+                        height: 18px;
+                        image-fit: contain;
+                        opacity: root.enabled ? 1 : 0.45;
+                    }
+                }
+
+                Text {
+                    horizontal-stretch: 0;
+                    text: root.label;
+                    font-size: 16px;
+                    vertical-alignment: center;
+                    color: root.enabled ? #1a1a1a : #8b8b8b;
+                }
             }
-            released => { root.commit(root.current-value); }
         }
 
-        ValueEditor {
-            current-value <=> root.current-value;
-            minimum: 0;
-            maximum: root.maximum-value;
-            enabled: root.enabled;
-            preview(value) => { root.preview(value); }
-            commit(value) => { root.commit(value); }
+        VerticalLayout {
+            alignment: start;
+
+            slider := Slider {
+                horizontal-stretch: 1;
+                min-width: 140px;
+                height: 54px;
+                enabled: root.enabled;
+                minimum: 0;
+                maximum: root.maximum-value;
+                value: root.current-value;
+                changed => {
+                    root.current-value = self.value;
+                    root.preview(root.current-value);
+                }
+                released => {
+                    root.commit(root.current-value);
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            ValueEditor {
+                width: 84px;
+                current-value <=> root.current-value;
+                minimum: 0;
+                maximum: root.maximum-value;
+                enabled: root.enabled;
+                preview(value) => {
+                    root.preview(value);
+                }
+                commit(value) => {
+                    root.commit(value);
+                }
+            }
         }
     }
 }

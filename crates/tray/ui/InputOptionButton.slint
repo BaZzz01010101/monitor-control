@@ -21,22 +21,39 @@ export component InputOptionButton inherits Rectangle {
         padding-bottom: 10px;
         alignment: center;
 
-        Image {
-            source: selected ? @image-url("../assets/icons/indicator_selected_ui.png") : @image-url("../assets/icons/indicator_unselected_ui.png");
+        Rectangle {
             width: 24px;
-            height: 24px;
-            image-fit: contain;
+            height: 36px;
+            background: transparent;
+
+            Image {
+                source: selected ? @image-url("../assets/icons/indicator_selected_ui.png") : @image-url("../assets/icons/indicator_unselected_ui.png");
+                width: 24px;
+                height: 24px;
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+            }
         }
 
-        Image {
-            source: root.port-icon;
-            width: root.label == "TB" ? 24px : 36px;
-            height: root.label == "TB" ? 24px : 36px;
-            image-fit: contain;
+        Rectangle {
+            width: root.label == "TB" ? 28px : 38px;
+            height: 36px;
+            background: transparent;
+
+            Image {
+                source: root.port-icon;
+                width: root.label == "TB" ? 24px : 36px;
+                height: root.label == "TB" ? 24px : 36px;
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+            }
         }
 
         Text {
             text: root.label;
+            font-size: 17px;
             vertical-alignment: center;
             color: #161616;
         }

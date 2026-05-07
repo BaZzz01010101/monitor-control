@@ -16,10 +16,12 @@ use dell_controller_tray::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{CloseRequestResponse, ComponentHandle, Timer, TimerMode};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::GetForegroundWindow};
 
 const DEBUG_UI_CAPTURE_DELAY_MS: u64 = 2_000;
 const EVENT_PUMP_INTERVAL_MS: u64 = 16;
+const ACTIVE_SNAPSHOT_INTERVAL_MS: u64 = 1_000;
+const INACTIVE_SNAPSHOT_INTERVAL_MS: u64 = 30_000;
 
 struct AppRuntime {
     controller: AppController,
@@ -32,10 +34,15 @@ struct AppRuntime {
     debug_capture_timer: Timer,
     launch_mode: LaunchMode,
     debug_ui_output_path: Option<PathBuf>,
+    window_visible: bool,
+    last_snapshot_request_ms: Option<u64>,
 }
 
 impl AppRuntime {
-    fn new(launch_mode: LaunchMode, debug_ui_output_path: Option<PathBuf>) -> anyhow::Result<Rc<RefCell<Self>>> {
+    fn new(
+        launch_mode: LaunchMode,
+        debug_ui_output_path: Option<PathBuf>,
+    ) -> anyhow::Result<Rc<RefCell<Self>>> {
         let (ui_action_tx, ui_action_rx) = mpsc::channel();
         let ui = UiBridge::new(ui_action_tx.clone())?;
         ui.window().window().on_close_requested(move || {
@@ -61,6 +68,8 @@ impl AppRuntime {
             debug_capture_timer: Timer::default(),
             launch_mode,
             debug_ui_output_path,
+            window_visible: false,
+            last_snapshot_request_ms: None,
         }));
 
         Self::start_event_pump(runtime.clone());
@@ -78,7 +87,10 @@ impl AppRuntime {
                 vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)]
             };
             app.apply_effects(effects)?;
-            app.apply_effects(vec![ControllerEffect::Worker(WorkerRequest::RefreshAutostart)])?;
+            app.apply_effects(vec![ControllerEffect::Worker(
+                WorkerRequest::RefreshAutostart,
+            )])?;
+            app.last_snapshot_request_ms = Some(now);
             app.sync_view();
         }
 
@@ -135,11 +147,12 @@ impl AppRuntime {
         }
 
         while let Ok(event) = self.worker_events.try_recv() {
-            self.controller.apply_worker_event(event);
+            self.controller.apply_worker_event(event, now);
         }
 
         let effects = self.controller.flush_pending(now);
         self.apply_effects(effects)?;
+        self.queue_periodic_snapshot(now)?;
         self.sync_view();
 
         Ok(())
@@ -148,8 +161,14 @@ impl AppRuntime {
     fn apply_effects(&mut self, effects: Vec<ControllerEffect>) -> anyhow::Result<()> {
         for effect in effects {
             match effect {
-                ControllerEffect::ShowWindow => self.ui.show()?,
-                ControllerEffect::HideWindow => self.ui.hide()?,
+                ControllerEffect::ShowWindow => {
+                    self.ui.show()?;
+                    self.window_visible = true;
+                }
+                ControllerEffect::HideWindow => {
+                    self.ui.hide()?;
+                    self.window_visible = false;
+                }
                 ControllerEffect::Quit => {
                     slint::quit_event_loop().ok();
                 }
@@ -162,6 +181,25 @@ impl AppRuntime {
         }
 
         Ok(())
+    }
+
+    fn queue_periodic_snapshot(&mut self, now_ms: u64) -> anyhow::Result<()> {
+        let active = self.window_is_active();
+        if snapshot_poll_due(self.last_snapshot_request_ms, now_ms, active) {
+            self.last_snapshot_request_ms = Some(now_ms);
+            self.apply_effects(vec![ControllerEffect::Worker(WorkerRequest::ReadSnapshot)])?;
+        }
+        Ok(())
+    }
+
+    fn window_is_active(&self) -> bool {
+        self.window_visible && self.window_is_foreground()
+    }
+
+    fn window_is_foreground(&self) -> bool {
+        hwnd_from_window(self.ui.window().window())
+            .map(|hwnd| unsafe { GetForegroundWindow() == hwnd })
+            .unwrap_or(false)
     }
 
     fn sync_view(&mut self) {
@@ -211,7 +249,9 @@ fn hwnd_from_window(window: &slint::Window) -> anyhow::Result<HWND> {
 
     match raw {
         RawWindowHandle::Win32(handle) => Ok(HWND(handle.hwnd.get() as *mut core::ffi::c_void)),
-        _ => Err(anyhow::anyhow!("Slint did not expose a Win32 window handle")),
+        _ => Err(anyhow::anyhow!(
+            "Slint did not expose a Win32 window handle"
+        )),
     }
 }
 
@@ -220,4 +260,42 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn snapshot_poll_interval_ms(window_active: bool) -> u64 {
+    if window_active {
+        ACTIVE_SNAPSHOT_INTERVAL_MS
+    } else {
+        INACTIVE_SNAPSHOT_INTERVAL_MS
+    }
+}
+
+fn snapshot_poll_due(
+    last_snapshot_request_ms: Option<u64>,
+    now_ms: u64,
+    window_active: bool,
+) -> bool {
+    last_snapshot_request_ms.is_none_or(|last_ms| {
+        now_ms.saturating_sub(last_ms) >= snapshot_poll_interval_ms(window_active)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_poll_interval_tracks_window_activity() {
+        assert_eq!(snapshot_poll_interval_ms(true), 1_000);
+        assert_eq!(snapshot_poll_interval_ms(false), 30_000);
+    }
+
+    #[test]
+    fn snapshot_poll_due_uses_the_selected_interval() {
+        assert!(snapshot_poll_due(Some(1_000), 2_000, true));
+        assert!(!snapshot_poll_due(Some(1_000), 1_999, true));
+        assert!(snapshot_poll_due(Some(1_000), 31_000, false));
+        assert!(!snapshot_poll_due(Some(1_000), 30_999, false));
+        assert!(snapshot_poll_due(None, 1_000, true));
+    }
 }

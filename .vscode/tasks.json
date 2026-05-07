@@ -5,11 +5,12 @@
       "label": "cargo build outputs",
       "type": "shell",
       "command": "cargo",
-      "args": ["build", "--workspace", "--bins"],
+      "args": ["build", "--workspace", "--bins", "--features", "slint/live-preview"],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
-          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}",
+          "SLINT_LIVE_PREVIEW": "1"
         }
       },
       "problemMatcher": ["$rustc"],

@@ -3,8 +3,6 @@ component StepperButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked;
 
-    border-width: 1px;
-    border-color: #d0d0d0;
     background: enabled ? #ffffff : #f2f2f2;
 
     Image {
@@ -32,8 +30,8 @@ export component ValueEditor inherits Rectangle {
     callback preview(int);
     callback commit(int);
 
-    width: 80px;
-    height: 38px;
+    width: 84px;
+    height: 39px;
     border-radius: 4px;
     border-width: 1px;
     border-color: #d0d0d0;
@@ -96,6 +94,7 @@ export component ValueEditor inherits Rectangle {
                 width: parent.width;
                 height: parent.height;
                 text: root.current-value;
+                font-size: 18px;
                 enabled: root.enabled;
                 single-line: true;
                 horizontal-alignment: center;
@@ -144,6 +143,7 @@ export component ValueEditor inherits Rectangle {
                 padding: 0px;
 
                 StepperButton {
+                    height: 19px;
                     icon: @image-url("../assets/icons/arrow_up_ui.png");
                     enabled: root.enabled;
                     clicked => { root.set-committed-value(root.current-value + 1); }
@@ -155,6 +155,7 @@ export component ValueEditor inherits Rectangle {
                 }
 
                 StepperButton {
+                    height: 19px;
                     icon: @image-url("../assets/icons/arrow_down_ui.png");
                     enabled: root.enabled;
                     clicked => { root.set-committed-value(root.current-value - 1); }

@@ -30,20 +30,25 @@ impl UiBridge {
     }
 
     pub fn apply_state(&self, state: &UiState) {
-        self.window.set_monitor_title(state.monitor_title.clone().into());
-        self.window.set_input_summary(state.input_summary.clone().into());
+        self.window
+            .set_monitor_title(state.monitor_title.clone().into());
+        self.window
+            .set_input_summary(state.input_summary.clone().into());
         self.window.set_hdr_status(state.hdr_status.clone().into());
-        self.window.set_brightness_value(state.brightness.value as i32);
+        self.window
+            .set_brightness_value(state.brightness.value as i32);
         self.window
             .set_brightness_maximum(state.brightness.maximum as i32);
         self.window.set_brightness_enabled(state.brightness.enabled);
         self.window.set_contrast_value(state.contrast.value as i32);
-        self.window.set_contrast_maximum(state.contrast.maximum as i32);
+        self.window
+            .set_contrast_maximum(state.contrast.maximum as i32);
         self.window.set_contrast_enabled(state.contrast.enabled);
         self.window
             .set_selected_input(input_route_to_ui_index(state.selected_input));
         self.window.set_input_enabled(state.input_enabled);
-        self.window.set_status_text(state.status_text.clone().into());
+        self.window
+            .set_status_text(state.status_text.clone().into());
     }
 }
 
@@ -102,5 +107,22 @@ fn input_route_to_ui_index(route: InputRoute) -> i32 {
         InputRoute::UsbC => 1,
         InputRoute::DisplayPort => 2,
         InputRoute::Hdmi => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    #[test]
+    fn main_window_uses_the_compact_target_width() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("ui")
+                .join("MainWindow.slint"),
+        )
+        .expect("failed to read MainWindow.slint");
+
+        assert!(source.contains("width: 570px;"));
     }
 }

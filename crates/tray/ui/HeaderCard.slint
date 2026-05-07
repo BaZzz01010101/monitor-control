@@ -12,40 +12,44 @@ export component HeaderCard inherits Rectangle {
     background: #ffffff;
 
     HorizontalBox {
-        spacing: 18px;
-        padding: 18px;
-        alignment: center;
+        spacing: 16px;
+        padding: 16px;
 
         Image {
             source: @image-url("../assets/icons/monitor_ui.png");
-            width: 112px;
-            height: 72px;
+            width: 80px;
+            height: 48px;
             image-fit: contain;
         }
 
         VerticalBox {
             spacing: 6px;
             padding: 0px;
-            vertical-stretch: 0;
-            horizontal-stretch: 1;
 
             HorizontalBox {
-                spacing: 12px;
+                spacing: 8px;
                 padding: 0px;
-                alignment: center;
 
                 Text {
                     text: root.monitor-title;
-                    font-size: 18px;
-                    font-weight: 700;
+                    font-size: 16px;
+                    font-weight: 600;
                     color: #111111;
                     vertical-alignment: center;
                 }
 
-                Rectangle {
-                    width: 1px;
-                    height: 20px;
-                    background: #d6d6d6;
+                VerticalBox {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: center;
+
+                    Rectangle {
+                        width: 1px;
+                        drop-shadow-color: #e0e0e0;
+                        drop-shadow-offset-x: 1px;
+                        height: 16px;
+                        background: #d6d6d6;
+                    }
                 }
 
                 Text {
@@ -64,11 +68,24 @@ export component HeaderCard inherits Rectangle {
             }
         }
 
-        Button {
-            text: "Refresh";
-            icon: @image-url("../assets/icons/refresh_ui.png");
-            icon-size: 22px;
-            clicked => { root.refresh(); }
+        Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            padding-right: 8px;
+            Button {
+                text: "Refresh";
+                icon: @image-url("../assets/icons/refresh_ui.png");
+                icon-size: 16px;
+                height: 36px;
+                min-width: 104px;
+                clicked => {
+                    root.refresh();
+                }
+            }
         }
     }
 }

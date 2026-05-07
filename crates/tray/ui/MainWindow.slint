@@ -4,11 +4,19 @@ import { PictureCard } from "PictureCard.slint";
 import { InputCard } from "InputCard.slint";
 import { StatusBar } from "StatusBar.slint";
 
+component CardTitle inherits Text {
+    font-size: 18px;
+    font-weight: 600;
+    color: #161616;
+}
+
 export component MainWindow inherits Window {
     title: "Dell Controller";
-    width: 760px;
-    height: 460px;
+    width: 570px;
+    height: 480px;
     background: #f7fafd;
+    default-font-family: "Segoe UI Variable Text";
+    default-font-size: 14px;
 
     in property <string> monitor-title: "No DDC/CI monitor detected";
     in property <string> input-summary: "Input";
@@ -42,14 +50,17 @@ export component MainWindow inherits Window {
             monitor-title: root.monitor-title;
             input-summary: root.input-summary;
             hdr-status: root.hdr-status;
-            refresh => { root.refresh(); }
+            refresh => {
+                root.refresh();
+            }
         }
 
-        Text {
-            text: "Picture";
-            font-size: 18px;
-            font-weight: 600;
-            color: #161616;
+        HorizontalLayout {
+            padding-left: 10px;
+
+            CardTitle {
+                text: "Picture";
+            }
         }
 
         PictureCard {
@@ -59,26 +70,40 @@ export component MainWindow inherits Window {
             contrast-value <=> root.contrast-value;
             contrast-maximum: root.contrast-maximum;
             contrast-enabled: root.contrast-enabled;
-            brightness-preview(value) => { root.brightness-preview(value); }
-            brightness-commit(value) => { root.brightness-commit(value); }
-            contrast-preview(value) => { root.contrast-preview(value); }
-            contrast-commit(value) => { root.contrast-commit(value); }
+            brightness-preview(value) => {
+                root.brightness-preview(value);
+            }
+            brightness-commit(value) => {
+                root.brightness-commit(value);
+            }
+            contrast-preview(value) => {
+                root.contrast-preview(value);
+            }
+            contrast-commit(value) => {
+                root.contrast-commit(value);
+            }
         }
 
-        Text {
-            text: "KVM / Input";
-            font-size: 18px;
-            font-weight: 600;
-            color: #161616;
+        HorizontalLayout {
+            padding-left: 10px;
+
+            CardTitle {
+                text: "KVM / Input";
+            }
         }
 
         InputCard {
             selected-input: root.selected-input;
             enabled: root.input-enabled;
-            select-input(value) => { root.select-input(value); }
+            select-input(value) => {
+                root.select-input(value);
+            }
         }
 
-        Rectangle { vertical-stretch: 1; background: transparent; }
+        Rectangle {
+            vertical-stretch: 1;
+            background: transparent;
+        }
 
         StatusBar {
             text: root.status-text;
