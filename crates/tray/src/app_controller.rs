@@ -28,6 +28,13 @@ impl InputRoute {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum UiPane {
+    #[default]
+    Main,
+    Settings,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FeatureId {
     Brightness,
@@ -46,6 +53,8 @@ impl FeatureId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiAction {
     OpenWindow,
+    OpenSettings,
+    CloseSettings,
     HideWindow,
     Exit,
     Refresh,
@@ -113,6 +122,7 @@ impl Default for FeatureState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UiState {
+    pub active_pane: UiPane,
     pub monitor_title: String,
     pub input_summary: String,
     pub hdr_status: String,
@@ -128,6 +138,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            active_pane: UiPane::Main,
             monitor_title: "No DDC/CI monitor detected".into(),
             input_summary: "Input".into(),
             hdr_status: "Windows HDR: unavailable".into(),
@@ -186,15 +197,27 @@ impl AppController {
 
     pub fn handle_action(&mut self, action: UiAction, now_ms: u64) -> Vec<ControllerEffect> {
         match action {
-            UiAction::OpenWindow => vec![
-                ControllerEffect::ShowWindow,
-                ControllerEffect::Worker(WorkerRequest::RefreshAll),
-                ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
-            ],
+            UiAction::OpenWindow => {
+                self.state.active_pane = UiPane::Main;
+                vec![
+                    ControllerEffect::ShowWindow,
+                    ControllerEffect::Worker(WorkerRequest::RefreshAll),
+                    ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
+                ]
+            }
+            UiAction::OpenSettings => {
+                self.state.active_pane = UiPane::Settings;
+                Vec::new()
+            }
+            UiAction::CloseSettings => {
+                self.state.active_pane = UiPane::Main;
+                Vec::new()
+            }
             UiAction::HideWindow => vec![ControllerEffect::HideWindow],
             UiAction::Exit => vec![ControllerEffect::Quit],
             UiAction::Refresh => vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)],
             UiAction::ToggleAutostart => {
+                self.state.autostart_enabled = !self.state.autostart_enabled;
                 vec![ControllerEffect::Worker(WorkerRequest::ToggleAutostart)]
             }
             UiAction::SetInput(route) => self.set_input(route, now_ms),

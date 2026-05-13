@@ -1,6 +1,6 @@
 use dell_controller_tray::app_controller::{
     AppController, ControllerEffect, FeatureId, FeatureSnapshot, InputRoute, MonitorSnapshot,
-    UiAction, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE, INPUT_HDMI_VALUE,
+    UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE, INPUT_HDMI_VALUE,
     INPUT_USB_C_VALUE,
 };
 
@@ -39,6 +39,63 @@ fn open_window_requests_show_and_initial_refreshes() {
             ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
         ]
     );
+}
+
+#[test]
+fn settings_actions_switch_the_active_pane() {
+    let mut controller = AppController::default();
+
+    controller.handle_action(UiAction::OpenSettings, 1_000);
+    assert_eq!(controller.ui_state().active_pane, UiPane::Settings);
+
+    controller.handle_action(UiAction::CloseSettings, 1_100);
+    assert_eq!(controller.ui_state().active_pane, UiPane::Main);
+}
+
+#[test]
+fn opening_the_window_resets_the_settings_pane_to_main() {
+    let mut controller = AppController::default();
+
+    controller.handle_action(UiAction::OpenSettings, 1_000);
+    controller.handle_action(UiAction::OpenWindow, 1_100);
+
+    assert_eq!(controller.ui_state().active_pane, UiPane::Main);
+}
+
+#[test]
+fn autostart_worker_event_updates_ui_state() {
+    let mut controller = AppController::default();
+
+    controller.apply_worker_event(
+        WorkerEvent::AutostartState {
+            enabled: true,
+            status: String::new(),
+        },
+        1_000,
+    );
+
+    assert!(controller.ui_state().autostart_enabled);
+}
+
+#[test]
+fn toggle_autostart_updates_ui_state_immediately() {
+    let mut controller = AppController::default();
+
+    controller.apply_worker_event(
+        WorkerEvent::AutostartState {
+            enabled: false,
+            status: String::new(),
+        },
+        900,
+    );
+
+    let effects = controller.handle_action(UiAction::ToggleAutostart, 1_000);
+
+    assert_eq!(
+        effects,
+        vec![ControllerEffect::Worker(WorkerRequest::ToggleAutostart)]
+    );
+    assert!(controller.ui_state().autostart_enabled);
 }
 
 #[test]

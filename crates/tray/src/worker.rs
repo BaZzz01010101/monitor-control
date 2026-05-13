@@ -257,6 +257,10 @@ fn execute_worker_task<D: WorkerDevice>(
                     let _ = event_tx.send(WorkerEvent::Error(format!(
                         "Autostart update failed: {error}"
                     )));
+                    let _ = event_tx.send(WorkerEvent::AutostartState {
+                        enabled: device.autostart_enabled(),
+                        status: String::new(),
+                    });
                 }
             }
         }
@@ -546,5 +550,51 @@ mod tests {
 
         assert_eq!(device.calls, vec!["write:10:64"]);
         assert!(event_rx.try_recv().is_err());
+    }
+
+    struct FailingAutostartDevice {
+        enabled: bool,
+    }
+
+    impl WorkerDevice for FailingAutostartDevice {
+        fn refresh_monitors(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn snapshot(&mut self) -> MonitorSnapshot {
+            unreachable!("snapshot is not part of this test")
+        }
+
+        fn write_vcp(&mut self, _code: u8, _value: u32) -> Result<(), String> {
+            unreachable!("write_vcp is not part of this test")
+        }
+
+        fn autostart_enabled(&self) -> bool {
+            self.enabled
+        }
+
+        fn set_autostart_enabled(&mut self, _enabled: bool) -> Result<(), String> {
+            Err("permission denied".into())
+        }
+    }
+
+    #[test]
+    fn failed_autostart_toggle_re_emits_actual_state() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut device = FailingAutostartDevice { enabled: false };
+
+        execute_worker_task(WorkerTask::ToggleAutostart, &mut device, &event_tx);
+
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::Error("Autostart update failed: permission denied".into())
+        );
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::AutostartState {
+                enabled: false,
+                status: String::new(),
+            }
+        );
     }
 }
