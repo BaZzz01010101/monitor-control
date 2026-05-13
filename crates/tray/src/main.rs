@@ -16,7 +16,10 @@ use dell_controller_tray::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{CloseRequestResponse, ComponentHandle, Timer, TimerMode};
-use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::GetForegroundWindow};
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow, ShowWindow, SW_RESTORE},
+};
 
 const DEBUG_UI_CAPTURE_DELAY_MS: u64 = 2_000;
 const EVENT_PUMP_INTERVAL_MS: u64 = 16;
@@ -134,15 +137,13 @@ impl AppRuntime {
         let now = now_ms();
 
         while let Ok(action) = self.ui_actions.try_recv() {
-            let effects = self.controller.handle_action(action, now);
-            self.apply_effects(effects)?;
+            self.handle_action(action, now)?;
         }
 
         if let Some(tray) = self.tray.as_mut() {
             let actions = tray.drain_actions(now);
             for action in actions {
-                let effects = self.controller.handle_action(action, now);
-                self.apply_effects(effects)?;
+                self.handle_action(action, now)?;
             }
         }
 
@@ -155,6 +156,17 @@ impl AppRuntime {
         self.queue_periodic_snapshot(now)?;
         self.sync_view();
 
+        Ok(())
+    }
+
+    fn handle_action(&mut self, action: UiAction, now_ms: u64) -> anyhow::Result<()> {
+        let should_focus_existing_window =
+            should_focus_existing_window(action.clone(), self.window_visible);
+        let effects = self.controller.handle_action(action, now_ms);
+        self.apply_effects(effects)?;
+        if should_focus_existing_window {
+            self.focus_window()?;
+        }
         Ok(())
     }
 
@@ -200,6 +212,19 @@ impl AppRuntime {
         hwnd_from_window(self.ui.window().window())
             .map(|hwnd| unsafe { GetForegroundWindow() == hwnd })
             .unwrap_or(false)
+    }
+
+    fn focus_window(&self) -> anyhow::Result<()> {
+        let window = self.ui.window().window();
+        window.set_minimized(false);
+
+        let hwnd = hwnd_from_window(window)?;
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+        }
+
+        Ok(())
     }
 
     fn sync_view(&mut self) {
@@ -280,6 +305,10 @@ fn snapshot_poll_due(
     })
 }
 
+fn should_focus_existing_window(action: UiAction, window_visible: bool) -> bool {
+    matches!(action, UiAction::OpenWindow) && window_visible
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +326,12 @@ mod tests {
         assert!(snapshot_poll_due(Some(1_000), 31_000, false));
         assert!(!snapshot_poll_due(Some(1_000), 30_999, false));
         assert!(snapshot_poll_due(None, 1_000, true));
+    }
+
+    #[test]
+    fn open_window_focuses_existing_windows_instead_of_reopening_them() {
+        assert!(should_focus_existing_window(UiAction::OpenWindow, true));
+        assert!(!should_focus_existing_window(UiAction::OpenWindow, false));
+        assert!(!should_focus_existing_window(UiAction::Refresh, true));
     }
 }

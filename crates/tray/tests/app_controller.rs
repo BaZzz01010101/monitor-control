@@ -57,9 +57,23 @@ fn opening_the_window_resets_the_settings_pane_to_main() {
     let mut controller = AppController::default();
 
     controller.handle_action(UiAction::OpenSettings, 1_000);
+    controller.handle_action(UiAction::HideWindow, 1_050);
     controller.handle_action(UiAction::OpenWindow, 1_100);
 
     assert_eq!(controller.ui_state().active_pane, UiPane::Main);
+}
+
+#[test]
+fn opening_the_window_while_already_visible_preserves_the_active_pane() {
+    let mut controller = AppController::default();
+
+    controller.handle_action(UiAction::OpenWindow, 900);
+    controller.handle_action(UiAction::OpenSettings, 1_000);
+
+    let effects = controller.handle_action(UiAction::OpenWindow, 1_100);
+
+    assert_eq!(controller.ui_state().active_pane, UiPane::Settings);
+    assert!(effects.is_empty());
 }
 
 #[test]

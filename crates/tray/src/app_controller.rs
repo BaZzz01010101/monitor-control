@@ -164,6 +164,7 @@ pub enum ControllerEffect {
 #[derive(Debug)]
 pub struct AppController {
     state: UiState,
+    window_hidden: bool,
     brightness_throttle: WriteThrottle,
     contrast_throttle: WriteThrottle,
     input_throttle: WriteThrottle,
@@ -178,6 +179,7 @@ impl Default for AppController {
     fn default() -> Self {
         Self {
             state: UiState::default(),
+            window_hidden: true,
             brightness_throttle: WriteThrottle::new(DEFAULT_LIVE_WRITE_INTERVAL_MS),
             contrast_throttle: WriteThrottle::new(DEFAULT_LIVE_WRITE_INTERVAL_MS),
             input_throttle: WriteThrottle::new(DEFAULT_LIVE_WRITE_INTERVAL_MS),
@@ -198,12 +200,17 @@ impl AppController {
     pub fn handle_action(&mut self, action: UiAction, now_ms: u64) -> Vec<ControllerEffect> {
         match action {
             UiAction::OpenWindow => {
-                self.state.active_pane = UiPane::Main;
-                vec![
-                    ControllerEffect::ShowWindow,
-                    ControllerEffect::Worker(WorkerRequest::RefreshAll),
-                    ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
-                ]
+                if self.window_hidden {
+                    self.window_hidden = false;
+                    self.state.active_pane = UiPane::Main;
+                    vec![
+                        ControllerEffect::ShowWindow,
+                        ControllerEffect::Worker(WorkerRequest::RefreshAll),
+                        ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
+                    ]
+                } else {
+                    Vec::new()
+                }
             }
             UiAction::OpenSettings => {
                 self.state.active_pane = UiPane::Settings;
@@ -213,7 +220,10 @@ impl AppController {
                 self.state.active_pane = UiPane::Main;
                 Vec::new()
             }
-            UiAction::HideWindow => vec![ControllerEffect::HideWindow],
+            UiAction::HideWindow => {
+                self.window_hidden = true;
+                vec![ControllerEffect::HideWindow]
+            }
             UiAction::Exit => vec![ControllerEffect::Quit],
             UiAction::Refresh => vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)],
             UiAction::ToggleAutostart => {
