@@ -3,6 +3,7 @@ use dell_controller_tray::app_controller::{
     ShortcutTarget, UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE,
     INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
 };
+use dell_controller_tray::persistence::PersistedSettings;
 
 fn sample_snapshot() -> MonitorSnapshot {
     MonitorSnapshot {
@@ -36,7 +37,6 @@ fn open_window_requests_show_and_initial_refreshes() {
         vec![
             ControllerEffect::ShowWindow,
             ControllerEffect::Worker(WorkerRequest::RefreshAll),
-            ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
         ]
     );
 }
@@ -107,9 +107,30 @@ fn toggle_autostart_updates_ui_state_immediately() {
 
     assert_eq!(
         effects,
-        vec![ControllerEffect::Worker(WorkerRequest::ToggleAutostart)]
+        vec![ControllerEffect::Worker(WorkerRequest::SetAutostart {
+            enabled: true,
+            quiet: false,
+        })]
     );
     assert!(controller.ui_state().autostart_enabled);
+}
+
+#[test]
+fn hydrating_persisted_settings_seeds_durable_ui_values() {
+    let mut controller = AppController::default();
+
+    controller.hydrate_persisted_settings(&PersistedSettings {
+        autostart_enabled: true,
+        tb_shortcut: "Ctrl+Alt+T".into(),
+        dp_shortcut: "Ctrl+Alt+D".into(),
+        hdmi_shortcut: "Ctrl+Alt+H".into(),
+    });
+
+    let state = controller.ui_state();
+    assert!(state.autostart_enabled);
+    assert_eq!(state.tb_shortcut.value, "Ctrl+Alt+T");
+    assert_eq!(state.dp_shortcut.value, "Ctrl+Alt+D");
+    assert_eq!(state.hdmi_shortcut.value, "Ctrl+Alt+H");
 }
 
 #[test]

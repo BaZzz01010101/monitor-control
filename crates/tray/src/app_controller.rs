@@ -1,3 +1,4 @@
+use crate::persistence::PersistedSettings;
 use crate::value_controls::WriteThrottle;
 
 pub const BRIGHTNESS_CODE: u8 = 0x10;
@@ -88,6 +89,7 @@ pub enum UiAction {
         shortcut: String,
     },
     ClearShortcut(ShortcutTarget),
+    PersistWindowState,
     PreviewFeature {
         feature: FeatureId,
         value: u32,
@@ -104,7 +106,7 @@ pub enum WorkerRequest {
     RefreshAll,
     ReadSnapshot,
     RefreshAutostart,
-    ToggleAutostart,
+    SetAutostart { enabled: bool, quiet: bool },
     WriteFeature { code: u8, value: u32 },
     SetInput { value: u32 },
 }
@@ -257,6 +259,31 @@ impl AppController {
         self.state.clone()
     }
 
+    pub fn hydrate_persisted_settings(&mut self, settings: &PersistedSettings) {
+        self.state.autostart_enabled = settings.autostart_enabled;
+        self.state.tb_shortcut.value = normalize_shortcut_value(&settings.tb_shortcut);
+        self.state.tb_shortcut.preview.clear();
+        self.state.tb_shortcut.awaiting_final_key = false;
+        self.state.tb_shortcut.error_text.clear();
+        self.state.dp_shortcut.value = normalize_shortcut_value(&settings.dp_shortcut);
+        self.state.dp_shortcut.preview.clear();
+        self.state.dp_shortcut.awaiting_final_key = false;
+        self.state.dp_shortcut.error_text.clear();
+        self.state.hdmi_shortcut.value = normalize_shortcut_value(&settings.hdmi_shortcut);
+        self.state.hdmi_shortcut.preview.clear();
+        self.state.hdmi_shortcut.awaiting_final_key = false;
+        self.state.hdmi_shortcut.error_text.clear();
+    }
+
+    pub fn persisted_settings(&self) -> PersistedSettings {
+        PersistedSettings {
+            autostart_enabled: self.state.autostart_enabled,
+            tb_shortcut: self.state.tb_shortcut.value.clone(),
+            dp_shortcut: self.state.dp_shortcut.value.clone(),
+            hdmi_shortcut: self.state.hdmi_shortcut.value.clone(),
+        }
+    }
+
     pub fn shortcut_value(&self, target: ShortcutTarget) -> &str {
         &self.shortcut_state(target).value
     }
@@ -306,7 +333,6 @@ impl AppController {
                     vec![
                         ControllerEffect::ShowWindow,
                         ControllerEffect::Worker(WorkerRequest::RefreshAll),
-                        ControllerEffect::Worker(WorkerRequest::RefreshAutostart),
                     ]
                 } else {
                     Vec::new()
@@ -328,12 +354,16 @@ impl AppController {
             UiAction::Refresh => vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)],
             UiAction::ToggleAutostart => {
                 self.state.autostart_enabled = !self.state.autostart_enabled;
-                vec![ControllerEffect::Worker(WorkerRequest::ToggleAutostart)]
+                vec![ControllerEffect::Worker(WorkerRequest::SetAutostart {
+                    enabled: self.state.autostart_enabled,
+                    quiet: false,
+                })]
             }
             UiAction::DeactivateShortcutCapture(target) => self.deactivate_shortcut_capture(target),
             UiAction::PreviewShortcut { target, preview } => self.preview_shortcut(target, preview),
             UiAction::CommitShortcut { target, shortcut } => self.commit_shortcut(target, shortcut),
             UiAction::ClearShortcut(target) => self.clear_shortcut(target),
+            UiAction::PersistWindowState => Vec::new(),
             UiAction::SetInput(route) => self.set_input(route, now_ms),
             UiAction::PreviewFeature { feature, value } => {
                 self.preview_feature(feature, value, now_ms)

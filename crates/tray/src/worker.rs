@@ -112,7 +112,10 @@ enum WorkerTask {
     RefreshAll,
     ReadSnapshot,
     RefreshAutostart,
-    ToggleAutostart,
+    SetAutostart {
+        enabled: bool,
+        quiet: bool,
+    },
     WriteVcp {
         code: u8,
         value: u32,
@@ -158,7 +161,9 @@ impl PendingWorkerRequests {
                 Some(WorkerTask::ReadSnapshot)
             }
             WorkerRequest::RefreshAutostart => Some(WorkerTask::RefreshAutostart),
-            WorkerRequest::ToggleAutostart => Some(WorkerTask::ToggleAutostart),
+            WorkerRequest::SetAutostart { enabled, quiet } => {
+                Some(WorkerTask::SetAutostart { enabled, quiet })
+            }
             WorkerRequest::WriteFeature { code, value } => {
                 Some(self.coalesce_write(code, value, false))
             }
@@ -240,13 +245,14 @@ fn execute_worker_task<D: WorkerDevice>(
                 status: String::new(),
             });
         }
-        WorkerTask::ToggleAutostart => {
-            let next = !device.autostart_enabled();
-            match device.set_autostart_enabled(next) {
+        WorkerTask::SetAutostart { enabled, quiet } => {
+            match device.set_autostart_enabled(enabled) {
                 Ok(()) => {
                     let _ = event_tx.send(WorkerEvent::AutostartState {
-                        enabled: next,
-                        status: if next {
+                        enabled,
+                        status: if quiet {
+                            String::new()
+                        } else if enabled {
                             "Autostart enabled".into()
                         } else {
                             "Autostart disabled".into()
@@ -579,11 +585,18 @@ mod tests {
     }
 
     #[test]
-    fn failed_autostart_toggle_re_emits_actual_state() {
+    fn failed_autostart_set_re_emits_actual_state() {
         let (event_tx, event_rx) = mpsc::channel();
         let mut device = FailingAutostartDevice { enabled: false };
 
-        execute_worker_task(WorkerTask::ToggleAutostart, &mut device, &event_tx);
+        execute_worker_task(
+            WorkerTask::SetAutostart {
+                enabled: true,
+                quiet: false,
+            },
+            &mut device,
+            &event_tx,
+        );
 
         assert_eq!(
             event_rx.recv().unwrap(),

@@ -1,8 +1,9 @@
 use std::{
     cell::RefCell,
+    mem::size_of,
     path::PathBuf,
     rc::Rc,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc::{self, Receiver, Sender},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -14,28 +15,39 @@ use dell_controller_tray::{
     },
     debug_ui::{capture_window_to_bmp, debug_ui_output_path, launch_mode_from_args, LaunchMode},
     hotkeys::ShortcutHotkeys,
+    persistence::{
+        PersistedAppState, PersistedSettings, PersistedWindowPosition, PersistenceStore,
+    },
     tray_shell::TrayShell,
     ui_bridge::UiBridge,
     worker::{spawn_worker, WorkerHandle},
 };
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState as GlobalHotKeyState};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use slint::{CloseRequestResponse, ComponentHandle, Timer, TimerMode};
+use slint::{
+    winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor},
+    CloseRequestResponse, ComponentHandle, PhysicalPosition, Timer, TimerMode,
+};
 use windows::Win32::{
     Foundation::HWND,
-    UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow, ShowWindow, SW_RESTORE},
+    UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowPlacement, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        WINDOWPLACEMENT,
+    },
 };
 
 const DEBUG_UI_CAPTURE_DELAY_MS: u64 = 2_000;
 const EVENT_PUMP_INTERVAL_MS: u64 = 16;
 const ACTIVE_SNAPSHOT_INTERVAL_MS: u64 = 1_000;
 const INACTIVE_SNAPSHOT_INTERVAL_MS: u64 = 30_000;
+const MINIMIZED_WINDOW_SENTINEL_COORDINATE: i32 = -32_000;
 
 struct AppRuntime {
     controller: AppController,
     ui: UiBridge,
     worker: WorkerHandle,
     worker_events: Receiver<WorkerEvent>,
+    ui_action_tx: Sender<UiAction>,
     ui_actions: Receiver<UiAction>,
     tray: Option<TrayShell>,
     hotkeys: ShortcutHotkeys,
@@ -43,7 +55,11 @@ struct AppRuntime {
     debug_capture_timer: Timer,
     launch_mode: LaunchMode,
     debug_ui_output_path: Option<PathBuf>,
+    persistence: Option<PersistenceStore>,
+    startup_autostart_target: Option<bool>,
     window_visible: bool,
+    window_shown_once: bool,
+    window_move_tracking_installed: bool,
     last_snapshot_request_ms: Option<u64>,
 }
 
@@ -54,8 +70,9 @@ impl AppRuntime {
     ) -> anyhow::Result<Rc<RefCell<Self>>> {
         let (ui_action_tx, ui_action_rx) = mpsc::channel();
         let ui = UiBridge::new(ui_action_tx.clone())?;
+        let close_request_tx = ui_action_tx.clone();
         ui.window().window().on_close_requested(move || {
-            let _ = ui_action_tx.send(UiAction::HideWindow);
+            let _ = close_request_tx.send(UiAction::HideWindow);
             CloseRequestResponse::HideWindow
         });
 
@@ -66,12 +83,20 @@ impl AppRuntime {
             LaunchMode::DebugUi => None,
         };
         let hotkeys = ShortcutHotkeys::new()?;
+        let persistence = match PersistenceStore::for_current_user() {
+            Ok(store) => Some(store),
+            Err(error) => {
+                eprintln!("persistence unavailable: {error}");
+                None
+            }
+        };
 
         let runtime = Rc::new(RefCell::new(Self {
             controller: AppController::default(),
             ui,
             worker,
             worker_events,
+            ui_action_tx,
             ui_actions: ui_action_rx,
             tray,
             hotkeys,
@@ -79,10 +104,15 @@ impl AppRuntime {
             debug_capture_timer: Timer::default(),
             launch_mode,
             debug_ui_output_path,
+            persistence,
+            startup_autostart_target: None,
             window_visible: false,
+            window_shown_once: false,
+            window_move_tracking_installed: false,
             last_snapshot_request_ms: None,
         }));
 
+        runtime.borrow_mut().hydrate_from_persistence();
         Self::start_event_pump(runtime.clone());
         Ok(runtime)
     }
@@ -98,9 +128,14 @@ impl AppRuntime {
                 vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)]
             };
             app.apply_effects(effects)?;
-            app.apply_effects(vec![ControllerEffect::Worker(
-                WorkerRequest::RefreshAutostart,
-            )])?;
+            if let Some(enabled) = app.startup_autostart_target {
+                app.apply_effects(vec![ControllerEffect::Worker(
+                    WorkerRequest::SetAutostart {
+                        enabled,
+                        quiet: true,
+                    },
+                )])?;
+            }
             app.last_snapshot_request_ms = Some(now);
             app.sync_view();
         }
@@ -158,7 +193,11 @@ impl AppRuntime {
         self.process_hotkey_events(now)?;
 
         while let Ok(event) = self.worker_events.try_recv() {
+            let should_persist_settings = matches!(event, WorkerEvent::AutostartState { .. });
             self.controller.apply_worker_event(event, now);
+            if should_persist_settings {
+                self.persist_settings();
+            }
         }
 
         let effects = self.controller.flush_pending(now);
@@ -176,6 +215,10 @@ impl AppRuntime {
             }
             UiAction::ClearShortcut(target) => {
                 return self.clear_shortcut(target);
+            }
+            UiAction::PersistWindowState => {
+                self.persist_window_state();
+                return Ok(());
             }
             _ => {}
         }
@@ -205,6 +248,7 @@ impl AppRuntime {
                     .apply_shortcut_registration_failure(target, previous_value, error);
             }
         }
+        self.persist_settings();
         self.sync_view();
         Ok(())
     }
@@ -218,6 +262,7 @@ impl AppRuntime {
                     .apply_shortcut_registration_failure(target, previous_value, error);
             }
         }
+        self.persist_settings();
         self.sync_view();
         Ok(())
     }
@@ -228,12 +273,16 @@ impl AppRuntime {
                 ControllerEffect::ShowWindow => {
                     self.ui.show()?;
                     self.window_visible = true;
+                    self.window_shown_once = true;
+                    self.ensure_window_move_tracking();
                 }
                 ControllerEffect::HideWindow => {
+                    self.persist_window_state();
                     self.ui.hide()?;
                     self.window_visible = false;
                 }
                 ControllerEffect::Quit => {
+                    self.persist_window_state();
                     slint::quit_event_loop().ok();
                 }
                 ControllerEffect::Worker(request) => {
@@ -310,6 +359,128 @@ impl AppRuntime {
         }
     }
 
+    fn hydrate_from_persistence(&mut self) {
+        let Some(store) = self.persistence.clone() else {
+            return;
+        };
+
+        match store.load_settings() {
+            Ok(settings) => {
+                self.controller.hydrate_persisted_settings(&settings);
+                self.startup_autostart_target = Some(settings.autostart_enabled);
+                self.register_startup_shortcuts(&settings);
+            }
+            Err(error) => {
+                eprintln!("failed to load persisted settings: {error}");
+            }
+        }
+
+        match store.load_state() {
+            Ok(state) => self.restore_window_position(&state),
+            Err(error) => eprintln!("failed to load persisted app state: {error}"),
+        }
+    }
+
+    fn register_startup_shortcuts(&mut self, settings: &PersistedSettings) {
+        for (target, shortcut) in [
+            (ShortcutTarget::UsbC, settings.tb_shortcut.as_str()),
+            (ShortcutTarget::DisplayPort, settings.dp_shortcut.as_str()),
+            (ShortcutTarget::Hdmi, settings.hdmi_shortcut.as_str()),
+        ] {
+            if shortcut.is_empty() || shortcut == "None" {
+                continue;
+            }
+
+            match self.hotkeys.register_shortcut(target, shortcut) {
+                Ok(outcome) => {
+                    self.controller.apply_shortcut_registration_success(
+                        target,
+                        shortcut.to_string(),
+                        outcome.displaced_target,
+                    );
+                }
+                Err(error) => {
+                    self.controller.apply_shortcut_registration_failure(
+                        target,
+                        "None".into(),
+                        error,
+                    );
+                }
+            }
+        }
+    }
+
+    fn restore_window_position(&self, state: &PersistedAppState) {
+        let Some(position) = state.window_position else {
+            return;
+        };
+        if !should_restore_window_position(position) {
+            return;
+        }
+
+        self.ui
+            .window()
+            .window()
+            .set_position(PhysicalPosition::new(position.x, position.y));
+    }
+
+    fn persist_settings(&self) {
+        let Some(store) = self.persistence.as_ref() else {
+            return;
+        };
+
+        if let Err(error) = store.save_settings(&self.controller.persisted_settings()) {
+            eprintln!("failed to save settings: {error}");
+        }
+    }
+
+    fn persist_window_state(&self) {
+        let Some(store) = self.persistence.as_ref() else {
+            return;
+        };
+        let Some(position) = self.current_persistable_window_position() else {
+            return;
+        };
+        let state = PersistedAppState {
+            window_position: Some(position),
+        };
+        if let Err(error) = store.save_state(&state) {
+            eprintln!("failed to save app state: {error}");
+        }
+    }
+
+    fn current_persistable_window_position(&self) -> Option<PersistedWindowPosition> {
+        if !self.window_shown_once {
+            return None;
+        }
+
+        match window_placement(self.ui.window().window()) {
+            Ok(placement) => persisted_window_position_from_placement(true, &placement),
+            Err(error) => {
+                eprintln!("failed to read window placement: {error}");
+                None
+            }
+        }
+    }
+
+    fn ensure_window_move_tracking(&mut self) {
+        if self.window_move_tracking_installed {
+            return;
+        }
+
+        self.window_move_tracking_installed = true;
+        let ui_action_tx = self.ui_action_tx.clone();
+        self.ui
+            .window()
+            .window()
+            .on_winit_window_event(move |_, event| {
+                if matches!(event, WindowEvent::Moved(_)) {
+                    let _ = ui_action_tx.send(UiAction::PersistWindowState);
+                }
+                EventResult::Propagate
+            });
+    }
+
     fn capture_debug_ui(&self) -> anyhow::Result<PathBuf> {
         let path = self
             .debug_ui_output_path
@@ -355,6 +526,18 @@ fn hwnd_from_window(window: &slint::Window) -> anyhow::Result<HWND> {
     }
 }
 
+fn window_placement(window: &slint::Window) -> anyhow::Result<WINDOWPLACEMENT> {
+    let hwnd = hwnd_from_window(window)?;
+    let mut placement = WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetWindowPlacement(hwnd, &mut placement) }
+        .ok()
+        .context("failed to read window placement")?;
+    Ok(placement)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -388,6 +571,25 @@ fn should_execute_registered_shortcut(settings_open: bool, window_active: bool) 
     !(settings_open && window_active)
 }
 
+fn persisted_window_position_from_placement(
+    window_shown_once: bool,
+    placement: &WINDOWPLACEMENT,
+) -> Option<PersistedWindowPosition> {
+    if !window_shown_once {
+        return None;
+    }
+
+    Some(PersistedWindowPosition {
+        x: placement.rcNormalPosition.left,
+        y: placement.rcNormalPosition.top,
+    })
+}
+
+fn should_restore_window_position(position: PersistedWindowPosition) -> bool {
+    !(position.x <= MINIMIZED_WINDOW_SENTINEL_COORDINATE
+        && position.y <= MINIMIZED_WINDOW_SENTINEL_COORDINATE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +621,38 @@ mod tests {
         assert!(!should_execute_registered_shortcut(true, true));
         assert!(should_execute_registered_shortcut(true, false));
         assert!(should_execute_registered_shortcut(false, true));
+    }
+
+    #[test]
+    fn persisted_window_position_uses_the_normal_window_placement() {
+        let placement = windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT {
+            length: std::mem::size_of::<windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT>()
+                as u32,
+            showCmd: windows::Win32::UI::WindowsAndMessaging::SW_SHOWMINIMIZED.0 as u32,
+            rcNormalPosition: windows::Win32::Foundation::RECT {
+                left: 120,
+                top: 340,
+                right: 920,
+                bottom: 940,
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            persisted_window_position_from_placement(true, &placement),
+            Some(PersistedWindowPosition { x: 120, y: 340 })
+        );
+    }
+
+    #[test]
+    fn minimized_sentinel_coordinates_are_not_restored() {
+        assert!(!should_restore_window_position(PersistedWindowPosition {
+            x: -32_000,
+            y: -32_000,
+        }));
+        assert!(should_restore_window_position(PersistedWindowPosition {
+            x: -1_920,
+            y: 120,
+        }));
     }
 }
