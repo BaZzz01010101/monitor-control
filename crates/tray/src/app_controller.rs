@@ -28,6 +28,25 @@ impl InputRoute {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ShortcutTarget {
+    UsbC,
+    DisplayPort,
+    Hdmi,
+}
+
+impl ShortcutTarget {
+    pub const ALL: [Self; 3] = [Self::UsbC, Self::DisplayPort, Self::Hdmi];
+
+    pub const fn input_route(self) -> InputRoute {
+        match self {
+            Self::UsbC => InputRoute::UsbC,
+            Self::DisplayPort => InputRoute::DisplayPort,
+            Self::Hdmi => InputRoute::Hdmi,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UiPane {
     #[default]
@@ -59,8 +78,24 @@ pub enum UiAction {
     Exit,
     Refresh,
     ToggleAutostart,
-    PreviewFeature { feature: FeatureId, value: u32 },
-    CommitFeature { feature: FeatureId, value: u32 },
+    DeactivateShortcutCapture(ShortcutTarget),
+    PreviewShortcut {
+        target: ShortcutTarget,
+        preview: String,
+    },
+    CommitShortcut {
+        target: ShortcutTarget,
+        shortcut: String,
+    },
+    ClearShortcut(ShortcutTarget),
+    PreviewFeature {
+        feature: FeatureId,
+        value: u32,
+    },
+    CommitFeature {
+        feature: FeatureId,
+        value: u32,
+    },
     SetInput(InputRoute),
 }
 
@@ -121,6 +156,25 @@ impl Default for FeatureState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShortcutFieldState {
+    pub value: String,
+    pub preview: String,
+    pub awaiting_final_key: bool,
+    pub error_text: String,
+}
+
+impl Default for ShortcutFieldState {
+    fn default() -> Self {
+        Self {
+            value: "None".into(),
+            preview: String::new(),
+            awaiting_final_key: false,
+            error_text: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UiState {
     pub active_pane: UiPane,
     pub monitor_title: String,
@@ -133,6 +187,9 @@ pub struct UiState {
     pub no_monitor: bool,
     pub status_text: String,
     pub autostart_enabled: bool,
+    pub tb_shortcut: ShortcutFieldState,
+    pub dp_shortcut: ShortcutFieldState,
+    pub hdmi_shortcut: ShortcutFieldState,
 }
 
 impl Default for UiState {
@@ -149,6 +206,9 @@ impl Default for UiState {
             no_monitor: true,
             status_text: "Ready".into(),
             autostart_enabled: false,
+            tb_shortcut: ShortcutFieldState::default(),
+            dp_shortcut: ShortcutFieldState::default(),
+            hdmi_shortcut: ShortcutFieldState::default(),
         }
     }
 }
@@ -197,6 +257,46 @@ impl AppController {
         self.state.clone()
     }
 
+    pub fn shortcut_value(&self, target: ShortcutTarget) -> &str {
+        &self.shortcut_state(target).value
+    }
+
+    pub fn apply_shortcut_registration_success(
+        &mut self,
+        target: ShortcutTarget,
+        shortcut: String,
+        displaced_target: Option<ShortcutTarget>,
+    ) {
+        let state = self.shortcut_state_mut(target);
+        state.value = normalize_shortcut_value(&shortcut);
+        state.preview.clear();
+        state.awaiting_final_key = false;
+        state.error_text.clear();
+
+        if let Some(displaced_target) = displaced_target {
+            if displaced_target != target {
+                *self.shortcut_state_mut(displaced_target) = ShortcutFieldState::default();
+            }
+        }
+    }
+
+    pub fn apply_shortcut_registration_failure(
+        &mut self,
+        target: ShortcutTarget,
+        previous_value: String,
+        error_text: String,
+    ) {
+        let state = self.shortcut_state_mut(target);
+        state.value = normalize_shortcut_value(&previous_value);
+        state.preview.clear();
+        state.awaiting_final_key = false;
+        state.error_text = error_text;
+    }
+
+    pub fn apply_shortcut_clear_success(&mut self, target: ShortcutTarget) {
+        *self.shortcut_state_mut(target) = ShortcutFieldState::default();
+    }
+
     pub fn handle_action(&mut self, action: UiAction, now_ms: u64) -> Vec<ControllerEffect> {
         match action {
             UiAction::OpenWindow => {
@@ -230,6 +330,10 @@ impl AppController {
                 self.state.autostart_enabled = !self.state.autostart_enabled;
                 vec![ControllerEffect::Worker(WorkerRequest::ToggleAutostart)]
             }
+            UiAction::DeactivateShortcutCapture(target) => self.deactivate_shortcut_capture(target),
+            UiAction::PreviewShortcut { target, preview } => self.preview_shortcut(target, preview),
+            UiAction::CommitShortcut { target, shortcut } => self.commit_shortcut(target, shortcut),
+            UiAction::ClearShortcut(target) => self.clear_shortcut(target),
             UiAction::SetInput(route) => self.set_input(route, now_ms),
             UiAction::PreviewFeature { feature, value } => {
                 self.preview_feature(feature, value, now_ms)
@@ -370,6 +474,59 @@ impl AppController {
             .collect()
     }
 
+    fn deactivate_shortcut_capture(&mut self, target: ShortcutTarget) -> Vec<ControllerEffect> {
+        let state = self.shortcut_state_mut(target);
+        state.preview.clear();
+        state.awaiting_final_key = false;
+        Vec::new()
+    }
+
+    fn preview_shortcut(
+        &mut self,
+        target: ShortcutTarget,
+        preview: String,
+    ) -> Vec<ControllerEffect> {
+        let state = self.shortcut_state_mut(target);
+        state.preview = preview;
+        state.awaiting_final_key = true;
+        state.error_text.clear();
+        Vec::new()
+    }
+
+    fn commit_shortcut(
+        &mut self,
+        target: ShortcutTarget,
+        shortcut: String,
+    ) -> Vec<ControllerEffect> {
+        let state = self.shortcut_state_mut(target);
+        state.value = normalize_shortcut_value(&shortcut);
+        state.preview.clear();
+        state.awaiting_final_key = false;
+        state.error_text.clear();
+        Vec::new()
+    }
+
+    fn clear_shortcut(&mut self, target: ShortcutTarget) -> Vec<ControllerEffect> {
+        *self.shortcut_state_mut(target) = ShortcutFieldState::default();
+        Vec::new()
+    }
+
+    fn shortcut_state(&self, target: ShortcutTarget) -> &ShortcutFieldState {
+        match target {
+            ShortcutTarget::UsbC => &self.state.tb_shortcut,
+            ShortcutTarget::DisplayPort => &self.state.dp_shortcut,
+            ShortcutTarget::Hdmi => &self.state.hdmi_shortcut,
+        }
+    }
+
+    fn shortcut_state_mut(&mut self, target: ShortcutTarget) -> &mut ShortcutFieldState {
+        match target {
+            ShortcutTarget::UsbC => &mut self.state.tb_shortcut,
+            ShortcutTarget::DisplayPort => &mut self.state.dp_shortcut,
+            ShortcutTarget::Hdmi => &mut self.state.hdmi_shortcut,
+        }
+    }
+
     fn feature_state_mut(&mut self, feature: FeatureId) -> &mut FeatureState {
         match feature {
             FeatureId::Brightness => &mut self.state.brightness,
@@ -486,5 +643,13 @@ fn input_route_summary(route: InputRoute) -> &'static str {
         InputRoute::UsbC => "USB-C",
         InputRoute::DisplayPort => "DP",
         InputRoute::Hdmi => "HDMI",
+    }
+}
+
+fn normalize_shortcut_value(value: &str) -> String {
+    if value.is_empty() {
+        "None".into()
+    } else {
+        value.into()
     }
 }

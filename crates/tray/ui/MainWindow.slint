@@ -32,11 +32,36 @@ export component MainWindow inherits Window {
     in property <int> selected-input: 0;
     in property <bool> input-enabled: false;
     in-out property <bool> autostart-enabled: false;
+    in-out property <string> tb-shortcut: "None";
+    in property <string> tb-shortcut-preview: "";
+    in property <bool> tb-shortcut-awaiting-final-key: false;
+    in property <string> tb-shortcut-error-text: "";
+    in-out property <string> dp-shortcut: "None";
+    in property <string> dp-shortcut-preview: "";
+    in property <bool> dp-shortcut-awaiting-final-key: false;
+    in property <string> dp-shortcut-error-text: "";
+    in-out property <string> hdmi-shortcut: "None";
+    in property <string> hdmi-shortcut-preview: "";
+    in property <bool> hdmi-shortcut-awaiting-final-key: false;
+    in property <string> hdmi-shortcut-error-text: "";
     in property <string> status-text: "Ready";
 
     callback open-settings();
     callback close-settings();
     callback toggle-autostart();
+    callback deactivate-tb-shortcut-capture();
+    callback preview-tb-shortcut(string);
+    callback commit-tb-shortcut(string);
+    callback clear-tb-shortcut();
+    callback deactivate-dp-shortcut-capture();
+    callback preview-dp-shortcut(string);
+    callback commit-dp-shortcut(string);
+    callback clear-dp-shortcut();
+    callback deactivate-hdmi-shortcut-capture();
+    callback preview-hdmi-shortcut(string);
+    callback commit-hdmi-shortcut(string);
+    callback clear-hdmi-shortcut();
+    callback normalize-shortcut-key(string) -> string;
     callback brightness-preview(int);
     callback brightness-commit(int);
     callback contrast-preview(int);
@@ -126,11 +151,62 @@ export component MainWindow inherits Window {
         width: parent.width;
         height: parent.height;
         autostart-enabled <=> root.autostart-enabled;
+        tb-shortcut <=> root.tb-shortcut;
+        tb-shortcut-preview: root.tb-shortcut-preview;
+        tb-shortcut-awaiting-final-key: root.tb-shortcut-awaiting-final-key;
+        tb-shortcut-error-text: root.tb-shortcut-error-text;
+        dp-shortcut <=> root.dp-shortcut;
+        dp-shortcut-preview: root.dp-shortcut-preview;
+        dp-shortcut-awaiting-final-key: root.dp-shortcut-awaiting-final-key;
+        dp-shortcut-error-text: root.dp-shortcut-error-text;
+        hdmi-shortcut <=> root.hdmi-shortcut;
+        hdmi-shortcut-preview: root.hdmi-shortcut-preview;
+        hdmi-shortcut-awaiting-final-key: root.hdmi-shortcut-awaiting-final-key;
+        hdmi-shortcut-error-text: root.hdmi-shortcut-error-text;
         back => {
             root.close-settings();
         }
         toggle-autostart => {
             root.toggle-autostart();
+        }
+        deactivate-tb-shortcut-capture => {
+            root.deactivate-tb-shortcut-capture();
+        }
+        preview-tb-shortcut(text) => {
+            root.preview-tb-shortcut(text);
+        }
+        commit-tb-shortcut(text) => {
+            root.commit-tb-shortcut(text);
+        }
+        clear-tb-shortcut => {
+            root.clear-tb-shortcut();
+        }
+        deactivate-dp-shortcut-capture => {
+            root.deactivate-dp-shortcut-capture();
+        }
+        preview-dp-shortcut(text) => {
+            root.preview-dp-shortcut(text);
+        }
+        commit-dp-shortcut(text) => {
+            root.commit-dp-shortcut(text);
+        }
+        clear-dp-shortcut => {
+            root.clear-dp-shortcut();
+        }
+        deactivate-hdmi-shortcut-capture => {
+            root.deactivate-hdmi-shortcut-capture();
+        }
+        preview-hdmi-shortcut(text) => {
+            root.preview-hdmi-shortcut(text);
+        }
+        commit-hdmi-shortcut(text) => {
+            root.commit-hdmi-shortcut(text);
+        }
+        clear-hdmi-shortcut => {
+            root.clear-hdmi-shortcut();
+        }
+        normalize-shortcut-key(text) => {
+            return root.normalize-shortcut-key(text);
         }
     }
 }

@@ -1,6 +1,8 @@
 pub mod app_controller;
 pub mod debug_ui;
+pub mod hotkeys;
 pub mod monitor_text;
+pub mod shortcut_capture;
 pub mod tray_events;
 pub mod tray_shell;
 pub mod ui_bridge;

@@ -1,7 +1,7 @@
 use dell_controller_tray::app_controller::{
     AppController, ControllerEffect, FeatureId, FeatureSnapshot, InputRoute, MonitorSnapshot,
-    UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE, INPUT_HDMI_VALUE,
-    INPUT_USB_C_VALUE,
+    ShortcutTarget, UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE,
+    INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
 };
 
 fn sample_snapshot() -> MonitorSnapshot {
@@ -110,6 +110,106 @@ fn toggle_autostart_updates_ui_state_immediately() {
         vec![ControllerEffect::Worker(WorkerRequest::ToggleAutostart)]
     );
     assert!(controller.ui_state().autostart_enabled);
+}
+
+#[test]
+fn shortcut_capture_commits_and_focus_loss_clears_preview_state() {
+    let mut controller = AppController::default();
+
+    controller.handle_action(
+        UiAction::PreviewShortcut {
+            target: ShortcutTarget::Hdmi,
+            preview: "Ctrl+".into(),
+        },
+        1_010,
+    );
+
+    let previewing = controller.ui_state();
+    assert_eq!(previewing.hdmi_shortcut.value, "None");
+    assert_eq!(previewing.hdmi_shortcut.preview, "Ctrl+");
+    assert!(previewing.hdmi_shortcut.awaiting_final_key);
+
+    controller.apply_shortcut_registration_success(ShortcutTarget::Hdmi, "Ctrl+Q".into(), None);
+
+    let committed = controller.ui_state();
+    assert_eq!(committed.hdmi_shortcut.value, "Ctrl+Q");
+    assert_eq!(committed.hdmi_shortcut.preview, "");
+    assert!(!committed.hdmi_shortcut.awaiting_final_key);
+
+    controller.handle_action(
+        UiAction::PreviewShortcut {
+            target: ShortcutTarget::Hdmi,
+            preview: "Shift+".into(),
+        },
+        1_040,
+    );
+    controller.handle_action(
+        UiAction::DeactivateShortcutCapture(ShortcutTarget::Hdmi),
+        1_050,
+    );
+
+    let deactivated = controller.ui_state();
+    assert_eq!(deactivated.hdmi_shortcut.value, "Ctrl+Q");
+    assert_eq!(deactivated.hdmi_shortcut.preview, "");
+    assert!(!deactivated.hdmi_shortcut.awaiting_final_key);
+}
+
+#[test]
+fn successful_shortcut_registration_resets_the_displaced_shortcut() {
+    let mut controller = AppController::default();
+
+    controller.apply_shortcut_registration_success(
+        ShortcutTarget::DisplayPort,
+        "Ctrl+Alt+D".into(),
+        None,
+    );
+    controller.apply_shortcut_registration_success(ShortcutTarget::Hdmi, "Ctrl+Alt+H".into(), None);
+
+    controller.apply_shortcut_registration_success(
+        ShortcutTarget::UsbC,
+        "Ctrl+Alt+H".into(),
+        Some(ShortcutTarget::Hdmi),
+    );
+
+    let state = controller.ui_state();
+    assert_eq!(state.tb_shortcut.value, "Ctrl+Alt+H");
+    assert_eq!(state.dp_shortcut.value, "Ctrl+Alt+D");
+    assert_eq!(state.hdmi_shortcut.value, "None");
+    assert_eq!(state.tb_shortcut.error_text, "");
+    assert_eq!(state.hdmi_shortcut.error_text, "");
+}
+
+#[test]
+fn failed_shortcut_registration_restores_the_previous_value_and_sets_error() {
+    let mut controller = AppController::default();
+
+    controller.apply_shortcut_registration_success(
+        ShortcutTarget::DisplayPort,
+        "Ctrl+Alt+D".into(),
+        None,
+    );
+    controller.handle_action(
+        UiAction::PreviewShortcut {
+            target: ShortcutTarget::DisplayPort,
+            preview: "Ctrl+Alt+".into(),
+        },
+        1_000,
+    );
+
+    controller.apply_shortcut_registration_failure(
+        ShortcutTarget::DisplayPort,
+        "Ctrl+Alt+D".into(),
+        "That shortcut is already in use.".into(),
+    );
+
+    let state = controller.ui_state();
+    assert_eq!(state.dp_shortcut.value, "Ctrl+Alt+D");
+    assert_eq!(state.dp_shortcut.preview, "");
+    assert!(!state.dp_shortcut.awaiting_final_key);
+    assert_eq!(
+        state.dp_shortcut.error_text,
+        "That shortcut is already in use."
+    );
 }
 
 #[test]

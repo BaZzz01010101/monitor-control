@@ -14,7 +14,7 @@ serde.workspace = true
 slint = { version = "1.16.1", features = ["raw-window-handle-06"] }
 toml.workspace = true
 tray-icon = "0.23.1"
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 slint-build = "1.16.1"

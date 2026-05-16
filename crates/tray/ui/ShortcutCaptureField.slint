@@ -1,0 +1,321 @@
+export component ShortcutCaptureField inherits Rectangle {
+    in-out property <string> value: "None";
+    in property <string> accessible-name: "Shortcut";
+    in property <bool> enabled: true;
+    in property <string> preview-text: "";
+    in property <bool> awaiting-final-key: false;
+    callback deactivate-capture();
+    callback preview-shortcut(string);
+    callback commit-shortcut(string);
+    callback clear-shortcut();
+    callback normalize-shortcut-key(string) -> string;
+
+    width: 176px;
+    height: 36px;
+    border-radius: 6px;
+    border-width: focus-scope.has-focus ? 2px : 1px;
+    border-color: !root.enabled ? #d7dbe1 : focus-scope.has-focus ? #1d4ed8 : touch.has-hover ? #b7c0cb : #d0d7e2;
+    background: root.enabled ? #ffffff : #f5f7fa;
+    accessible-role: text-input;
+    accessible-label: root.accessible-name;
+    accessible-value: root.normalized-value();
+    forward-focus: focus-scope;
+
+    function normalized-value() -> string {
+        if root.value == "" {
+            return "None";
+        }
+
+        return root.value;
+    }
+
+    function display-text() -> string {
+        if focus-scope.has-focus && root.awaiting-final-key && root.preview-text != "" {
+            return root.preview-text;
+        }
+
+        return root.normalized-value();
+    }
+
+    function modifier-prefix(control: bool, alt: bool, shift: bool, meta: bool) -> string {
+        return (control ? "Ctrl+" : "")
+            + (alt ? "Alt+" : "")
+            + (shift ? "Shift+" : "")
+            + (meta ? "Win+" : "");
+    }
+
+    function committed-modifier-prefix(control: bool, alt: bool, shift: bool, meta: bool) -> string {
+        return root.awaiting-final-key && root.preview-text != ""
+            ? root.preview-text
+            : root.modifier-prefix(control, alt, shift, meta);
+    }
+
+    function is-windows-layout-switch-modifier-combo(control: bool, alt: bool, shift: bool, meta: bool) -> bool {
+        // Keep Windows layout switching shortcuts available during capture:
+        // Alt+Shift and Ctrl+Shift.
+        return !meta
+            && ((alt && shift && !control)
+                || (control && shift && !alt));
+    }
+
+    function is-modifier-key(text: string) -> bool {
+        return text == Key.Shift
+            || text == Key.ShiftR
+            || text == Key.Control
+            || text == Key.ControlR
+            || text == Key.Alt
+            || text == Key.AltGr
+            || text == Key.Meta
+            || text == Key.MetaR;
+    }
+
+    function function-key-label-1(text: string) -> string {
+        if (text == Key.F1) { return "F1"; }
+        if (text == Key.F2) { return "F2"; }
+        if (text == Key.F3) { return "F3"; }
+        if (text == Key.F4) { return "F4"; }
+        if (text == Key.F5) { return "F5"; }
+        if (text == Key.F6) { return "F6"; }
+        if (text == Key.F7) { return "F7"; }
+        if (text == Key.F8) { return "F8"; }
+        return "";
+    }
+
+    function function-key-label-2(text: string) -> string {
+        if (text == Key.F9) { return "F9"; }
+        if (text == Key.F10) { return "F10"; }
+        if (text == Key.F11) { return "F11"; }
+        if (text == Key.F12) { return "F12"; }
+        if (text == Key.F13) { return "F13"; }
+        if (text == Key.F14) { return "F14"; }
+        if (text == Key.F15) { return "F15"; }
+        if (text == Key.F16) { return "F16"; }
+        return "";
+    }
+
+    function function-key-label-3(text: string) -> string {
+        if (text == Key.F17) { return "F17"; }
+        if (text == Key.F18) { return "F18"; }
+        if (text == Key.F19) { return "F19"; }
+        if (text == Key.F20) { return "F20"; }
+        if (text == Key.F21) { return "F21"; }
+        if (text == Key.F22) { return "F22"; }
+        if (text == Key.F23) { return "F23"; }
+        if (text == Key.F24) { return "F24"; }
+        return "";
+    }
+
+    function function-key-label(text: string) -> string {
+        let group1 = root.function-key-label-1(text);
+        if group1 != "" {
+            return group1;
+        }
+
+        let group2 = root.function-key-label-2(text);
+        if group2 != "" {
+            return group2;
+        }
+
+        return root.function-key-label-3(text);
+    }
+
+    function editing-key-label(text: string) -> string {
+        if (text == Key.Backspace) { return "Backspace"; }
+        if (text == Key.Tab) { return "Tab"; }
+        if (text == Key.Return) { return "Enter"; }
+        if (text == Key.Escape) { return "Escape"; }
+        if (text == Key.Backtab) { return "Backtab"; }
+        if (text == Key.Delete) { return "Delete"; }
+        if (text == Key.CapsLock) { return "CapsLock"; }
+        if (text == Key.Space) { return "Space"; }
+        return "";
+    }
+
+    function navigation-key-label(text: string) -> string {
+        if (text == Key.UpArrow) { return "Up"; }
+        if (text == Key.DownArrow) { return "Down"; }
+        if (text == Key.LeftArrow) { return "Left"; }
+        if (text == Key.RightArrow) { return "Right"; }
+        if (text == Key.Insert) { return "Insert"; }
+        if (text == Key.Home) { return "Home"; }
+        if (text == Key.End) { return "End"; }
+        if (text == Key.PageUp) { return "PageUp"; }
+        if (text == Key.PageDown) { return "PageDown"; }
+        return "";
+    }
+
+    function system-key-label(text: string) -> string {
+        if (text == Key.ScrollLock) { return "ScrollLock"; }
+        if (text == Key.Pause) { return "Pause"; }
+        if (text == Key.SysReq) { return "PrintScreen"; }
+        if (text == Key.Stop) { return "Stop"; }
+        if (text == Key.Menu) { return "Menu"; }
+        if (text == Key.Back) { return "Back"; }
+        return "";
+    }
+
+    function special-key-label(text: string) -> string {
+        let editingKey = root.editing-key-label(text);
+        if editingKey != "" {
+            return editingKey;
+        }
+
+        let navigationKey = root.navigation-key-label(text);
+        if navigationKey != "" {
+            return navigationKey;
+        }
+
+        let systemKey = root.system-key-label(text);
+        if systemKey != "" {
+            return systemKey;
+        }
+
+        return root.function-key-label(text);
+    }
+
+    function key-label(text: string) -> string {
+        let specialKey = root.special-key-label(text);
+        if specialKey != "" {
+            return specialKey;
+        }
+
+        let normalized = root.normalize-shortcut-key(text);
+        if normalized != "" {
+            return normalized;
+        }
+
+        if text == "" {
+            return "";
+        }
+
+        return text.to-uppercase();
+    }
+
+    Text {
+        x: 12px;
+        y: 0px;
+        width: parent.width - 24px;
+        height: parent.height;
+        text: root.display-text();
+        color: !root.enabled ? #8a94a3 : #161616;
+        font-size: 14px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => {
+            focus-scope.focus();
+        }
+    }
+
+    focus-scope := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        enabled: root.enabled;
+        focus-on-click: false;
+        changed has-focus => {
+            if !self.has-focus {
+                root.deactivate-capture();
+            }
+        }
+        focus-lost(reason) => {
+            root.deactivate-capture();
+        }
+        key-pressed(event) => {
+            if event.repeat {
+                return accept;
+            }
+
+            if root.is-modifier-key(event.text) {
+                root.preview-shortcut(
+                    root.modifier-prefix(
+                        event.modifiers.control,
+                        event.modifiers.alt,
+                        event.modifiers.shift,
+                        event.modifiers.meta,
+                    ),
+                );
+                if root.is-windows-layout-switch-modifier-combo(
+                    event.modifiers.control,
+                    event.modifiers.alt,
+                    event.modifiers.shift,
+                    event.modifiers.meta,
+                ) {
+                    return reject;
+                }
+                return accept;
+            }
+
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
+
+            if !event.modifiers.alt
+                && !event.modifiers.control
+                && !event.modifiers.shift
+                && !event.modifiers.meta
+                && event.text == Key.Backspace {
+                root.clear-shortcut();
+                return accept;
+            }
+
+            if !event.modifiers.alt
+                && !event.modifiers.control
+                && !event.modifiers.shift
+                && !event.modifiers.meta
+                && event.text == Key.Escape {
+                return reject;
+            }
+
+            // Keep Win+Space available for Windows input switching.
+            if event.modifiers.meta
+                && !event.modifiers.alt
+                && !event.modifiers.control
+                && !event.modifiers.shift
+                && event.text == Key.Space {
+                return reject;
+            }
+
+            let text = root.key-label(event.text);
+            if text != "" {
+                let prefix = root.committed-modifier-prefix(
+                    event.modifiers.control,
+                    event.modifiers.alt,
+                    event.modifiers.shift,
+                    event.modifiers.meta,
+                );
+                if prefix == "" {
+                    return reject;
+                }
+                root.commit-shortcut(prefix + text);
+                return accept;
+            }
+
+            return reject;
+        }
+        key-released(event) => {
+            if focus-scope.has-focus
+                && root.awaiting-final-key
+                && root.is-modifier-key(event.text) {
+                root.preview-shortcut(
+                    root.modifier-prefix(
+                        event.modifiers.control,
+                        event.modifiers.alt,
+                        event.modifiers.shift,
+                        event.modifiers.meta,
+                    ),
+                );
+                return accept;
+            }
+
+            return reject;
+        }
+    }
+}

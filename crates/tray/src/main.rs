@@ -8,12 +8,17 @@ use std::{
 
 use anyhow::Context;
 use dell_controller_tray::{
-    app_controller::{AppController, ControllerEffect, UiAction, WorkerEvent, WorkerRequest},
+    app_controller::{
+        AppController, ControllerEffect, ShortcutTarget, UiAction, UiPane, WorkerEvent,
+        WorkerRequest,
+    },
     debug_ui::{capture_window_to_bmp, debug_ui_output_path, launch_mode_from_args, LaunchMode},
+    hotkeys::ShortcutHotkeys,
     tray_shell::TrayShell,
     ui_bridge::UiBridge,
     worker::{spawn_worker, WorkerHandle},
 };
+use global_hotkey::{GlobalHotKeyEvent, HotKeyState as GlobalHotKeyState};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{CloseRequestResponse, ComponentHandle, Timer, TimerMode};
 use windows::Win32::{
@@ -33,6 +38,7 @@ struct AppRuntime {
     worker_events: Receiver<WorkerEvent>,
     ui_actions: Receiver<UiAction>,
     tray: Option<TrayShell>,
+    hotkeys: ShortcutHotkeys,
     pump_timer: Timer,
     debug_capture_timer: Timer,
     launch_mode: LaunchMode,
@@ -59,6 +65,7 @@ impl AppRuntime {
             LaunchMode::Normal => Some(TrayShell::new()?),
             LaunchMode::DebugUi => None,
         };
+        let hotkeys = ShortcutHotkeys::new()?;
 
         let runtime = Rc::new(RefCell::new(Self {
             controller: AppController::default(),
@@ -67,6 +74,7 @@ impl AppRuntime {
             worker_events,
             ui_actions: ui_action_rx,
             tray,
+            hotkeys,
             pump_timer: Timer::default(),
             debug_capture_timer: Timer::default(),
             launch_mode,
@@ -147,6 +155,8 @@ impl AppRuntime {
             }
         }
 
+        self.process_hotkey_events(now)?;
+
         while let Ok(event) = self.worker_events.try_recv() {
             self.controller.apply_worker_event(event, now);
         }
@@ -160,6 +170,16 @@ impl AppRuntime {
     }
 
     fn handle_action(&mut self, action: UiAction, now_ms: u64) -> anyhow::Result<()> {
+        match action {
+            UiAction::CommitShortcut { target, shortcut } => {
+                return self.commit_shortcut(target, shortcut);
+            }
+            UiAction::ClearShortcut(target) => {
+                return self.clear_shortcut(target);
+            }
+            _ => {}
+        }
+
         let should_focus_existing_window =
             should_focus_existing_window(action.clone(), self.window_visible);
         let effects = self.controller.handle_action(action, now_ms);
@@ -167,6 +187,38 @@ impl AppRuntime {
         if should_focus_existing_window {
             self.focus_window()?;
         }
+        Ok(())
+    }
+
+    fn commit_shortcut(&mut self, target: ShortcutTarget, shortcut: String) -> anyhow::Result<()> {
+        let previous_value = self.controller.shortcut_value(target).to_string();
+        match self.hotkeys.register_shortcut(target, &shortcut) {
+            Ok(outcome) => {
+                self.controller.apply_shortcut_registration_success(
+                    target,
+                    shortcut,
+                    outcome.displaced_target,
+                );
+            }
+            Err(error) => {
+                self.controller
+                    .apply_shortcut_registration_failure(target, previous_value, error);
+            }
+        }
+        self.sync_view();
+        Ok(())
+    }
+
+    fn clear_shortcut(&mut self, target: ShortcutTarget) -> anyhow::Result<()> {
+        let previous_value = self.controller.shortcut_value(target).to_string();
+        match self.hotkeys.clear_shortcut(target) {
+            Ok(()) => self.controller.apply_shortcut_clear_success(target),
+            Err(error) => {
+                self.controller
+                    .apply_shortcut_registration_failure(target, previous_value, error);
+            }
+        }
+        self.sync_view();
         Ok(())
     }
 
@@ -201,6 +253,29 @@ impl AppRuntime {
             self.last_snapshot_request_ms = Some(now_ms);
             self.apply_effects(vec![ControllerEffect::Worker(WorkerRequest::ReadSnapshot)])?;
         }
+        Ok(())
+    }
+
+    fn process_hotkey_events(&mut self, now_ms: u64) -> anyhow::Result<()> {
+        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
+            if event.state != GlobalHotKeyState::Pressed {
+                continue;
+            }
+
+            let Some(target) = self.hotkeys.target_for_event_id(event.id()) else {
+                continue;
+            };
+            let settings_open = self.controller.ui_state().active_pane == UiPane::Settings;
+            if !should_execute_registered_shortcut(settings_open, self.window_is_active()) {
+                continue;
+            }
+
+            let effects = self
+                .controller
+                .handle_action(UiAction::SetInput(target.input_route()), now_ms);
+            self.apply_effects(effects)?;
+        }
+
         Ok(())
     }
 
@@ -309,6 +384,10 @@ fn should_focus_existing_window(action: UiAction, window_visible: bool) -> bool 
     matches!(action, UiAction::OpenWindow) && window_visible
 }
 
+fn should_execute_registered_shortcut(settings_open: bool, window_active: bool) -> bool {
+    !(settings_open && window_active)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +412,12 @@ mod tests {
         assert!(should_focus_existing_window(UiAction::OpenWindow, true));
         assert!(!should_focus_existing_window(UiAction::OpenWindow, false));
         assert!(!should_focus_existing_window(UiAction::Refresh, true));
+    }
+
+    #[test]
+    fn shortcut_execution_is_blocked_only_for_the_active_settings_window() {
+        assert!(!should_execute_registered_shortcut(true, true));
+        assert!(should_execute_registered_shortcut(true, false));
+        assert!(should_execute_registered_shortcut(false, true));
     }
 }
