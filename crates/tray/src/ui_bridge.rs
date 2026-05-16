@@ -389,6 +389,8 @@ mod tests {
         assert!(source.contains("scroll := ScrollView"));
         assert!(source.contains("body := VerticalBox"));
         assert!(source.contains("focus-on-tab-navigation: false;"));
+        assert!(source.contains("init => {"));
+        assert!(source.contains("pane-focus.focus();"));
         assert!(source.contains("viewport-width: self.visible-width;"));
         assert!(source.contains("padding: 16px;"));
         assert!(source.contains("padding-top: 12px;"));

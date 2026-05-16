@@ -166,6 +166,9 @@ export component SettingsPane inherits Rectangle {
     callback normalize-shortcut-key(string) -> string;
 
     background: transparent;
+    init => {
+        pane-focus.focus();
+    }
 
     pane-focus := FocusScope {
         width: 100%;
