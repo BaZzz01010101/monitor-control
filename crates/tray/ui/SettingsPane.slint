@@ -1,13 +1,11 @@
-import { Switch, VerticalBox } from "std-widgets.slint";
+import { ScrollView, Switch, VerticalBox } from "std-widgets.slint";
 import { ShortcutCaptureField } from "ShortcutCaptureField.slint";
 
 component BackLinkButton inherits Rectangle {
     callback clicked;
 
-    x: 16px;
-    y: 16px;
-    width: 96px;
-    height: 28px;
+    width: content.preferred-width;
+    height: 17px;
     background: transparent;
     accessible-label: "Back";
     accessible-role: button;
@@ -16,24 +14,24 @@ component BackLinkButton inherits Rectangle {
     }
     forward-focus: focus-scope;
 
-    Image {
-        source: @image-url("../assets/icons/arrow_left_ui.svg");
-        x: 0px;
-        y: 1px;
-        width: 20px;
-        height: 20px;
-        image-fit: contain;
-        colorize: touch.has-hover || focus-scope.has-focus ? #0a365e : #2563eb;
-    }
+    content := HorizontalLayout {
+        spacing: 4px;
 
-    Text {
-        x: 24px;
-        y: 0px;
-        text: "Back";
-        font-size: 15px;
-        font-weight: 500;
-        color: touch.has-hover || focus-scope.has-focus ? #0a365e : #2563eb;
-        vertical-alignment: center;
+        Image {
+            source: @image-url("../assets/icons/arrow_left_ui.svg");
+            width: 20px;
+            height: 20px;
+            image-fit: contain;
+            colorize: touch.has-hover || focus-scope.has-focus ? #0a365e : #2563eb;
+        }
+
+        Text {
+            text: "Back";
+            font-size: 15px;
+            font-weight: 500;
+            color: touch.has-hover || focus-scope.has-focus ? #0a365e : #2563eb;
+            vertical-alignment: center;
+        }
     }
 
     touch := TouchArea {
@@ -46,10 +44,8 @@ component BackLinkButton inherits Rectangle {
     }
 
     focus-scope := FocusScope {
-        x: 0px;
-        y: 0px;
-        width: 0px;
-        height: 0px;
+        width: 100%;
+        height: 100%;
 
         key-pressed(event) => {
             if (event.text == " " || event.text == "\n") {
@@ -171,8 +167,6 @@ export component SettingsPane inherits Rectangle {
     background: transparent;
 
     pane-focus := FocusScope {
-        x: 0px;
-        y: 0px;
         width: 100%;
         height: 100%;
         focus-on-click: false;
@@ -185,171 +179,189 @@ export component SettingsPane inherits Rectangle {
             reject
         }
 
-        BackLinkButton {
-            clicked => {
-                root.back();
-            }
-        }
+        root-layout := VerticalLayout {
+            width: parent.width;
+            height: parent.height;
+            padding: 16px;
+            spacing: 0px;
 
-        Rectangle {
-            x: 16px;
-            y: 64px;
-            width: parent.width - 32px;
-            height: content.preferred-height;
-            background: transparent;
+            header := HorizontalLayout {
+                padding: 0px;
+                padding-bottom: 8px;
 
-            content := VerticalBox {
-                spacing: 12px;
-                alignment: start;
+                BackLinkButton {
+                    clicked => {
+                        root.back();
+                    }
+                }
 
                 Rectangle {
-                    width: parent.width;
-                    height: general-content.preferred-height;
-                    border-radius: 10px;
-                    border-width: 1px;
-                    border-color: #d7dbe1;
-                    background: #ffffff;
+                    horizontal-stretch: 1;
+                    background: transparent;
+                }
+            }
 
-                    general-content := VerticalBox {
-                        spacing: 10px;
-                        padding: 16px;
-                        alignment: start;
+            scroll := ScrollView {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+                viewport-width: self.visible-width;
+                mouse-drag-pan-enabled: true;
 
-                        Text {
-                            text: "General";
-                            font-size: 18px;
-                            font-weight: 600;
-                            color: #161616;
-                        }
+                body := VerticalBox {
+                    padding-top: 12px;
+                    padding-right: 2px;
+                    spacing: 12px;
+                    alignment: start;
 
-                        HorizontalLayout {
-                            spacing: 12px;
+                    Rectangle {
+                        preferred-width: 100%;
+                        height: general-content.preferred-height;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: #d7dbe1;
+                        background: #ffffff;
 
-                            VerticalBox {
-                                spacing: 0px;
-                                horizontal-stretch: 1;
+                        general-content := VerticalBox {
+                            spacing: 10px;
+                            padding: 16px;
+                            alignment: start;
 
-                                Text {
-                                    text: "Start with Windows";
-                                    font-size: 15px;
-                                    font-weight: 600;
-                                    color: #161616;
-                                }
-
-                                Text {
-                                    text: "Launch Dell Controller automatically after you sign in.";
-                                    font-size: 12px;
-                                    color: #5b6470;
-                                    wrap: word-wrap;
-                                }
+                            Text {
+                                text: "General";
+                                font-size: 18px;
+                                font-weight: 600;
+                                color: #161616;
                             }
 
-                            VerticalLayout {
-                                alignment: center;
+                            HorizontalLayout {
+                                spacing: 12px;
 
-                                Switch {
-                                    checked <=> root.autostart-enabled;
-                                    toggled => {
-                                        root.toggle-autostart();
+                                VerticalBox {
+                                    spacing: 0px;
+                                    horizontal-stretch: 1;
+
+                                    Text {
+                                        text: "Start with Windows";
+                                        font-size: 15px;
+                                        font-weight: 600;
+                                        color: #161616;
+                                    }
+
+                                    Text {
+                                        text: "Launch Dell Controller automatically after you sign in.";
+                                        font-size: 12px;
+                                        color: #5b6470;
+                                        wrap: word-wrap;
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Switch {
+                                        checked <=> root.autostart-enabled;
+                                        toggled => {
+                                            root.toggle-autostart();
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
 
-                Rectangle {
-                    width: parent.width;
-                    height: shortcuts-content.preferred-height;
-                    border-radius: 10px;
-                    border-width: 1px;
-                    border-color: #d7dbe1;
-                    background: #ffffff;
+                    Rectangle {
+                        preferred-width: 100%;
+                        height: shortcuts-content.preferred-height;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: #d7dbe1;
+                        background: #ffffff;
 
-                    shortcuts-content := VerticalBox {
-                        spacing: 10px;
-                        padding: 16px;
-                        alignment: start;
+                        shortcuts-content := VerticalBox {
+                            spacing: 10px;
+                            padding: 16px;
+                            alignment: start;
 
-                        Text {
-                            text: "Shortcuts";
-                            font-size: 18px;
-                            font-weight: 600;
-                            color: #161616;
-                        }
+                            Text {
+                                text: "Shortcuts";
+                                font-size: 18px;
+                                font-weight: 600;
+                                color: #161616;
+                            }
 
-                        ShortcutSettingRow {
-                            title: "Switch to TB";
-                            description: "Capture a shortcut for switching the monitor input to Thunderbolt / USB-C.";
-                            value <=> root.tb-shortcut;
-                            preview-text: root.tb-shortcut-preview;
-                            awaiting-final-key: root.tb-shortcut-awaiting-final-key;
-                            error-text: root.tb-shortcut-error-text;
-                            accessible-name: "Switch to TB shortcut";
-                            deactivate-capture => {
-                                root.deactivate-tb-shortcut-capture();
+                            ShortcutSettingRow {
+                                title: "Switch to TB";
+                                description: "Capture a shortcut for switching the monitor input to Thunderbolt / USB-C.";
+                                value <=> root.tb-shortcut;
+                                preview-text: root.tb-shortcut-preview;
+                                awaiting-final-key: root.tb-shortcut-awaiting-final-key;
+                                error-text: root.tb-shortcut-error-text;
+                                accessible-name: "Switch to TB shortcut";
+                                deactivate-capture => {
+                                    root.deactivate-tb-shortcut-capture();
+                                }
+                                preview-shortcut(text) => {
+                                    root.preview-tb-shortcut(text);
+                                }
+                                commit-shortcut(text) => {
+                                    root.commit-tb-shortcut(text);
+                                }
+                                clear-shortcut => {
+                                    root.clear-tb-shortcut();
+                                }
+                                normalize-shortcut-key(text) => {
+                                    return root.normalize-shortcut-key(text);
+                                }
                             }
-                            preview-shortcut(text) => {
-                                root.preview-tb-shortcut(text);
-                            }
-                            commit-shortcut(text) => {
-                                root.commit-tb-shortcut(text);
-                            }
-                            clear-shortcut => {
-                                root.clear-tb-shortcut();
-                            }
-                            normalize-shortcut-key(text) => {
-                                return root.normalize-shortcut-key(text);
-                            }
-                        }
 
-                        ShortcutSettingRow {
-                            title: "Switch to DP";
-                            description: "Capture a shortcut for switching the monitor input to DisplayPort.";
-                            value <=> root.dp-shortcut;
-                            preview-text: root.dp-shortcut-preview;
-                            awaiting-final-key: root.dp-shortcut-awaiting-final-key;
-                            error-text: root.dp-shortcut-error-text;
-                            accessible-name: "Switch to DP shortcut";
-                            deactivate-capture => {
-                                root.deactivate-dp-shortcut-capture();
+                            ShortcutSettingRow {
+                                title: "Switch to DP";
+                                description: "Capture a shortcut for switching the monitor input to DisplayPort.";
+                                value <=> root.dp-shortcut;
+                                preview-text: root.dp-shortcut-preview;
+                                awaiting-final-key: root.dp-shortcut-awaiting-final-key;
+                                error-text: root.dp-shortcut-error-text;
+                                accessible-name: "Switch to DP shortcut";
+                                deactivate-capture => {
+                                    root.deactivate-dp-shortcut-capture();
+                                }
+                                preview-shortcut(text) => {
+                                    root.preview-dp-shortcut(text);
+                                }
+                                commit-shortcut(text) => {
+                                    root.commit-dp-shortcut(text);
+                                }
+                                clear-shortcut => {
+                                    root.clear-dp-shortcut();
+                                }
+                                normalize-shortcut-key(text) => {
+                                    return root.normalize-shortcut-key(text);
+                                }
                             }
-                            preview-shortcut(text) => {
-                                root.preview-dp-shortcut(text);
-                            }
-                            commit-shortcut(text) => {
-                                root.commit-dp-shortcut(text);
-                            }
-                            clear-shortcut => {
-                                root.clear-dp-shortcut();
-                            }
-                            normalize-shortcut-key(text) => {
-                                return root.normalize-shortcut-key(text);
-                            }
-                        }
 
-                        ShortcutSettingRow {
-                            title: "Switch to HDMI";
-                            description: "Capture a shortcut for switching the monitor input to HDMI.";
-                            value <=> root.hdmi-shortcut;
-                            preview-text: root.hdmi-shortcut-preview;
-                            awaiting-final-key: root.hdmi-shortcut-awaiting-final-key;
-                            error-text: root.hdmi-shortcut-error-text;
-                            accessible-name: "Switch to HDMI shortcut";
-                            deactivate-capture => {
-                                root.deactivate-hdmi-shortcut-capture();
-                            }
-                            preview-shortcut(text) => {
-                                root.preview-hdmi-shortcut(text);
-                            }
-                            commit-shortcut(text) => {
-                                root.commit-hdmi-shortcut(text);
-                            }
-                            clear-shortcut => {
-                                root.clear-hdmi-shortcut();
-                            }
-                            normalize-shortcut-key(text) => {
-                                return root.normalize-shortcut-key(text);
+                            ShortcutSettingRow {
+                                title: "Switch to HDMI";
+                                description: "Capture a shortcut for switching the monitor input to HDMI.";
+                                value <=> root.hdmi-shortcut;
+                                preview-text: root.hdmi-shortcut-preview;
+                                awaiting-final-key: root.hdmi-shortcut-awaiting-final-key;
+                                error-text: root.hdmi-shortcut-error-text;
+                                accessible-name: "Switch to HDMI shortcut";
+                                deactivate-capture => {
+                                    root.deactivate-hdmi-shortcut-capture();
+                                }
+                                preview-shortcut(text) => {
+                                    root.preview-hdmi-shortcut(text);
+                                }
+                                commit-shortcut(text) => {
+                                    root.commit-hdmi-shortcut(text);
+                                }
+                                clear-shortcut => {
+                                    root.clear-hdmi-shortcut();
+                                }
+                                normalize-shortcut-key(text) => {
+                                    return root.normalize-shortcut-key(text);
+                                }
                             }
                         }
                     }

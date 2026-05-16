@@ -379,14 +379,18 @@ mod tests {
         assert!(source.contains("text: root.dp-shortcut-error-text;"));
         assert!(source.contains("text: root.hdmi-shortcut-error-text;"));
         assert!(source.contains("Start with Windows"));
-        assert!(source.contains("height: content.preferred-height;"));
+        assert!(source.contains("root-layout := VerticalLayout"));
         assert!(source.contains("checked <=> root.autostart-enabled;"));
         assert!(!source.contains("Autostart"));
         assert!(!source.contains("text: \"Settings\";"));
         assert!(source.contains("arrow_left_ui.svg"));
-        assert!(source.contains("x: 16px;"));
-        assert!(source.contains("y: 16px;"));
-        assert!(source.contains("width: 100%;"));
+        assert!(source.contains("ScrollView"));
+        assert!(source.contains("header := HorizontalLayout"));
+        assert!(source.contains("scroll := ScrollView"));
+        assert!(source.contains("body := VerticalBox"));
+        assert!(source.contains("viewport-width: self.visible-width;"));
+        assert!(source.contains("padding: 16px;"));
+        assert!(source.contains("padding-top: 12px;"));
         assert!(source.contains("mouse-cursor: pointer;"));
         assert!(source.contains("background: transparent;"));
         assert!(
@@ -395,6 +399,8 @@ mod tests {
         assert!(source.contains("key-pressed(event) => {"));
         assert!(source.contains("event.text == Key.Escape"));
         assert!(source.contains("root.back();"));
+        assert!(!source.contains("x: 16px;"));
+        assert!(!source.contains("y: 16px;"));
         assert!(!source.contains("#eaf3ff"));
     }
 
