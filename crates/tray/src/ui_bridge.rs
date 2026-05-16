@@ -388,11 +388,14 @@ mod tests {
         assert!(source.contains("header := HorizontalLayout"));
         assert!(source.contains("scroll := ScrollView"));
         assert!(source.contains("body := VerticalBox"));
+        assert!(source.contains("focus-on-tab-navigation: false;"));
         assert!(source.contains("viewport-width: self.visible-width;"));
         assert!(source.contains("padding: 16px;"));
         assert!(source.contains("padding-top: 12px;"));
         assert!(source.contains("mouse-cursor: pointer;"));
         assert!(source.contains("background: transparent;"));
+        assert!(source
+            .contains("focus-scope := FocusScope {\n        width: 0px;\n        height: 0px;"));
         assert!(
             source.contains("color: touch.has-hover || focus-scope.has-focus ? #0a365e : #2563eb;")
         );
