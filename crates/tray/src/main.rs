@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{
     cell::RefCell,
     mem::size_of,
@@ -654,5 +656,16 @@ mod tests {
             x: -1_920,
             y: 120,
         }));
+    }
+
+    #[test]
+    fn release_build_uses_the_windows_subsystem() {
+        let source =
+            std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+                .expect("failed to read main.rs");
+
+        assert!(source.contains(
+            "#![cfg_attr(not(debug_assertions), windows_subsystem = \"windows\")]"
+        ));
     }
 }
