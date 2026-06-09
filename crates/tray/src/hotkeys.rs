@@ -280,6 +280,14 @@ mod tests {
     }
 
     #[test]
+    fn parsing_ctrl_alt_pause_maps_to_the_pause_key() {
+        let hotkey = parse_display_shortcut("Ctrl+Alt+Pause").expect("shortcut should parse");
+
+        assert_eq!(hotkey.mods, Modifiers::CONTROL | Modifiers::ALT);
+        assert_eq!(hotkey.key, Code::Pause);
+    }
+
+    #[test]
     fn registering_a_conflicting_shortcut_moves_it_to_the_new_target() {
         let registrar = FakeRegistrar::default();
         let mut hotkeys = ShortcutHotkeys::with_registrar(registrar);
