@@ -1,0 +1,26 @@
+# lspi config for d:\DEV\dell-controller
+
+[[servers]]
+id = "rust-analyzer"
+kind = "rust_analyzer"
+command = "C:\\Users\\andy2002ua\\.cargo\\bin\\rust-analyzer.exe"
+extensions = ["rs"]
+root_dir = "."
+initialize_timeout_ms = 10000
+request_timeout_ms = 30000
+warmup_timeout_ms = 5000
+
+[[servers]]
+id = "slint-lsp"
+kind = "generic"
+command = "C:\\Users\\andy2002ua\\.cargo\\bin\\slint-lsp.exe"
+extensions = ["slint"]
+language_id = "slint"
+root_dir = "."
+initialize_timeout_ms = 10000
+request_timeout_ms = 30000
+warmup_timeout_ms = 5000
+
+[mcp.output]
+max_total_chars_default = 120000
+max_total_chars_hard = 2000000
