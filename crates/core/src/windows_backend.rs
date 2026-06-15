@@ -9,6 +9,7 @@ use crate::{
 mod imp {
     use std::sync::Arc;
 
+    use parking_lot::Mutex;
     use windows::core::BOOL;
     use windows::Win32::{
         Devices::Display::{
@@ -47,6 +48,7 @@ mod imp {
 
     pub struct WindowsDdcBackend {
         handle: PhysicalMonitorHandle,
+        gate: Mutex<()>,
     }
 
     unsafe impl Send for WindowsDdcBackend {}
@@ -56,6 +58,7 @@ mod imp {
         fn new(handle: HANDLE) -> Self {
             Self {
                 handle: PhysicalMonitorHandle::new(handle),
+                gate: Mutex::new(()),
             }
         }
 
@@ -118,6 +121,16 @@ mod imp {
                 Ok(())
             }
         }
+
+        fn synchronization_lock(&self) -> Option<&Mutex<()>> {
+            Some(&self.gate)
+        }
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct MonitorDiagnostics {
+        pub capability_error: Option<String>,
+        pub parse_error: Option<String>,
     }
 
     #[derive(Clone)]
@@ -125,6 +138,7 @@ mod imp {
         pub info: PhysicalMonitor,
         pub raw_capabilities: Option<String>,
         pub capabilities: Option<Capabilities>,
+        pub diagnostics: MonitorDiagnostics,
         pub backend: Arc<WindowsDdcBackend>,
     }
 
@@ -191,10 +205,18 @@ mod imp {
                         std::ptr::addr_of!(physical_monitor.hPhysicalMonitor).read_unaligned();
                     let description = wide_to_string(&description_field);
                     let backend = Arc::new(WindowsDdcBackend::new(handle));
-                    let raw_capabilities = backend.capabilities_string().ok();
-                    let capabilities = raw_capabilities
-                        .as_ref()
-                        .and_then(|raw| Capabilities::parse(raw).ok());
+                    let capabilities_result = backend.capabilities_string();
+                    let (raw_capabilities, capability_error) = match capabilities_result {
+                        Ok(raw) => (Some(raw), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    };
+                    let (capabilities, parse_error) = match raw_capabilities.as_ref() {
+                        Some(raw) => match Capabilities::parse(raw) {
+                            Ok(capabilities) => (Some(capabilities), None),
+                            Err(error) => (None, Some(error.to_string())),
+                        },
+                        None => (None, None),
+                    };
                     let model = capabilities.as_ref().and_then(|caps| caps.model.clone());
                     let index = monitors.len();
 
@@ -206,6 +228,10 @@ mod imp {
                         },
                         raw_capabilities,
                         capabilities,
+                        diagnostics: MonitorDiagnostics {
+                            capability_error,
+                            parse_error,
+                        },
                         backend,
                     });
                 }
@@ -226,6 +252,12 @@ mod imp {
     use std::sync::Arc;
 
     use super::*;
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct MonitorDiagnostics {
+        pub capability_error: Option<String>,
+        pub parse_error: Option<String>,
+    }
 
     pub struct WindowsDdcBackend;
 
@@ -248,6 +280,7 @@ mod imp {
         pub info: PhysicalMonitor,
         pub raw_capabilities: Option<String>,
         pub capabilities: Option<Capabilities>,
+        pub diagnostics: MonitorDiagnostics,
         pub backend: Arc<WindowsDdcBackend>,
     }
 
@@ -266,4 +299,4 @@ mod imp {
     }
 }
 
-pub use imp::{enumerate_monitors, WindowsDdcBackend, WindowsMonitor};
+pub use imp::{enumerate_monitors, MonitorDiagnostics, WindowsDdcBackend, WindowsMonitor};

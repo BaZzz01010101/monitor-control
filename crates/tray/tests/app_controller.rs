@@ -1,7 +1,7 @@
 use dell_controller_tray::app_controller::{
-    AppController, ControllerEffect, FeatureId, FeatureSnapshot, InputRoute, MonitorSnapshot,
-    ShortcutTarget, UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE,
-    INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
+    AppController, ControllerEffect, FeatureId, FeatureSnapshot, InputRoute, MonitorChoice,
+    MonitorSnapshot, ShortcutTarget, UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE,
+    CONTRAST_CODE, INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
 };
 use dell_controller_tray::persistence::PersistedSettings;
 
@@ -10,6 +10,12 @@ fn sample_snapshot() -> MonitorSnapshot {
         monitor_title: "Dell U4025QW".into(),
         input_summary: "DP".into(),
         hdr_status: "Windows HDR: On".into(),
+        diagnostic_status: String::new(),
+        monitor_choices: vec![MonitorChoice {
+            key: "dell-u4025qw|u4025qw|0".into(),
+            title: "Dell U4025QW".into(),
+        }],
+        selected_monitor_key: "dell-u4025qw|u4025qw|0".into(),
         brightness: FeatureSnapshot {
             value: 50,
             maximum: 100,
@@ -121,6 +127,7 @@ fn hydrating_persisted_settings_seeds_durable_ui_values() {
 
     controller.hydrate_persisted_settings(&PersistedSettings {
         autostart_enabled: true,
+        selected_monitor_key: "dell-u4025qw|u4025qw|0".into(),
         tb_shortcut: "Ctrl+Alt+T".into(),
         dp_shortcut: "Ctrl+Alt+D".into(),
         hdmi_shortcut: "Ctrl+Alt+H".into(),
@@ -131,6 +138,28 @@ fn hydrating_persisted_settings_seeds_durable_ui_values() {
     assert_eq!(state.tb_shortcut.value, "Ctrl+Alt+T");
     assert_eq!(state.dp_shortcut.value, "Ctrl+Alt+D");
     assert_eq!(state.hdmi_shortcut.value, "Ctrl+Alt+H");
+    assert_eq!(state.selected_monitor_key, "dell-u4025qw|u4025qw|0");
+}
+
+#[test]
+fn selecting_a_monitor_updates_durable_state_and_worker_selection() {
+    let mut controller = AppController::default();
+
+    let effects = controller.handle_action(
+        UiAction::SelectMonitor("dell-u4025qw|u4025qw|1".into()),
+        1_000,
+    );
+
+    assert_eq!(
+        effects,
+        vec![ControllerEffect::Worker(WorkerRequest::SelectMonitor {
+            key: "dell-u4025qw|u4025qw|1".into(),
+        })]
+    );
+    assert_eq!(
+        controller.persisted_settings().selected_monitor_key,
+        "dell-u4025qw|u4025qw|1"
+    );
 }
 
 #[test]

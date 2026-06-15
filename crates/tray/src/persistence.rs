@@ -2,6 +2,7 @@ use std::{
     env, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -19,6 +20,8 @@ const APP_DIR_NAME: &str = "Dell Controller";
 pub struct PersistedSettings {
     #[serde(default)]
     pub autostart_enabled: bool,
+    #[serde(default)]
+    pub selected_monitor_key: String,
     #[serde(default = "default_shortcut_value")]
     pub tb_shortcut: String,
     #[serde(default = "default_shortcut_value")]
@@ -44,6 +47,12 @@ pub struct PersistenceStore {
     base_dir: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadOutcome<T> {
+    pub value: T,
+    pub warning: Option<String>,
+}
+
 impl PersistenceStore {
     pub fn new(base_dir: impl AsRef<Path>) -> Self {
         Self {
@@ -57,6 +66,10 @@ impl PersistenceStore {
     }
 
     pub fn load_settings(&self) -> Result<PersistedSettings> {
+        Ok(self.load_settings_with_warning()?.value)
+    }
+
+    pub fn load_settings_with_warning(&self) -> Result<LoadOutcome<PersistedSettings>> {
         self.load_toml_or_default(&self.base_dir.join(SETTINGS_FILE_NAME))
     }
 
@@ -65,6 +78,10 @@ impl PersistenceStore {
     }
 
     pub fn load_state(&self) -> Result<PersistedAppState> {
+        Ok(self.load_state_with_warning()?.value)
+    }
+
+    pub fn load_state_with_warning(&self) -> Result<LoadOutcome<PersistedAppState>> {
         self.load_toml_or_default(&self.base_dir.join(STATE_FILE_NAME))
     }
 
@@ -72,13 +89,32 @@ impl PersistenceStore {
         self.save_toml(&self.base_dir.join(STATE_FILE_NAME), state)
     }
 
-    fn load_toml_or_default<T>(&self, path: &Path) -> Result<T>
+    fn load_toml_or_default<T>(&self, path: &Path) -> Result<LoadOutcome<T>>
     where
         T: Default + for<'de> Deserialize<'de>,
     {
         match fs::read_to_string(path) {
-            Ok(contents) => Ok(toml::from_str(&contents).unwrap_or_default()),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(T::default()),
+            Ok(contents) => match toml::from_str(&contents) {
+                Ok(value) => Ok(LoadOutcome {
+                    value,
+                    warning: None,
+                }),
+                Err(error) => {
+                    let backup = preserve_corrupt_file(path)?;
+                    Ok(LoadOutcome {
+                        value: T::default(),
+                        warning: Some(format!(
+                            "Ignored corrupt persisted file {}; backup written to {}: {error}",
+                            path.display(),
+                            backup.display()
+                        )),
+                    })
+                }
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(LoadOutcome {
+                value: T::default(),
+                warning: None,
+            }),
             Err(error) => Err(error)
                 .with_context(|| format!("failed to read persisted file {}", path.display())),
         }
@@ -103,6 +139,26 @@ fn default_shortcut_value() -> String {
     "None".into()
 }
 
+fn preserve_corrupt_file(path: &Path) -> Result<PathBuf> {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("persisted");
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let backup = path.with_file_name(format!("{stem}.corrupt.{timestamp_ms}.toml"));
+    fs::copy(path, &backup).with_context(|| {
+        format!(
+            "failed to preserve corrupt persisted file {} at {}",
+            path.display(),
+            backup.display()
+        )
+    })?;
+    Ok(backup)
+}
+
 fn replace_file_atomically(from: &Path, to: &Path) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -122,7 +178,7 @@ fn replace_file_atomically(from: &Path, to: &Path) -> Result<()> {
                 to.display()
             )
         })?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]

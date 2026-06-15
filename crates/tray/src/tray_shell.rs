@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use anyhow::Context;
 use image::ImageReader;
 use tray_icon::{
-    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, Submenu},
     Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
 use crate::{
-    app_controller::UiAction,
+    app_controller::{MonitorChoice, UiAction},
     tray_events::{TrayAction, TrayClickTracker},
 };
 
@@ -17,6 +17,10 @@ pub struct TrayShell {
     _menu: Menu,
     open_item: MenuItem,
     refresh_item: MenuItem,
+    monitor_menu: Submenu,
+    monitor_items: Vec<(String, CheckMenuItem)>,
+    current_monitor_choices: Vec<MonitorChoice>,
+    current_selected_monitor_key: String,
     autostart_item: CheckMenuItem,
     exit_item: MenuItem,
     tray_clicks: TrayClickTracker,
@@ -26,12 +30,19 @@ impl TrayShell {
     pub fn new() -> anyhow::Result<Self> {
         let open_item = MenuItem::new("Open", true, None);
         let refresh_item = MenuItem::new("Refresh", true, None);
+        let monitor_menu = Submenu::new("Monitor", false);
         let autostart_item = CheckMenuItem::new("Autostart", true, false, None);
         let exit_item = MenuItem::new("Exit", true, None);
 
         let menu = Menu::new();
-        menu.append_items(&[&open_item, &refresh_item, &autostart_item, &exit_item])
-            .context("failed to build tray menu")?;
+        menu.append_items(&[
+            &open_item,
+            &refresh_item,
+            &monitor_menu,
+            &autostart_item,
+            &exit_item,
+        ])
+        .context("failed to build tray menu")?;
 
         let tray_icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu.clone()))
@@ -46,6 +57,10 @@ impl TrayShell {
             _menu: menu,
             open_item,
             refresh_item,
+            monitor_menu,
+            monitor_items: Vec::new(),
+            current_monitor_choices: Vec::new(),
+            current_selected_monitor_key: String::new(),
             autostart_item,
             exit_item,
             tray_clicks: TrayClickTracker::default(),
@@ -54,6 +69,43 @@ impl TrayShell {
 
     pub fn set_autostart_checked(&self, enabled: bool) {
         self.autostart_item.set_checked(enabled);
+    }
+
+    pub fn set_monitor_choices(
+        &mut self,
+        choices: &[MonitorChoice],
+        selected_key: &str,
+    ) -> anyhow::Result<()> {
+        if self.current_monitor_choices == choices
+            && self.current_selected_monitor_key == selected_key
+        {
+            return Ok(());
+        }
+
+        while self.monitor_menu.remove_at(0).is_some() {}
+        self.monitor_items.clear();
+        self.current_monitor_choices = choices.to_vec();
+        self.current_selected_monitor_key = selected_key.into();
+
+        if choices.is_empty() {
+            let item = MenuItem::new("No DDC/CI monitors", false, None);
+            self.monitor_menu
+                .append(&item)
+                .context("failed to update monitor tray menu")?;
+            self.monitor_menu.set_enabled(false);
+            return Ok(());
+        }
+
+        for choice in choices {
+            let item = CheckMenuItem::new(&choice.title, true, choice.key == selected_key, None);
+            self.monitor_menu
+                .append(&item)
+                .context("failed to update monitor tray menu")?;
+            self.monitor_items.push((choice.key.clone(), item));
+        }
+
+        self.monitor_menu.set_enabled(true);
+        Ok(())
     }
 
     pub fn drain_actions(&mut self, now_ms: u64) -> Vec<UiAction> {
@@ -68,6 +120,12 @@ impl TrayShell {
                 actions.push(UiAction::ToggleAutostart);
             } else if event.id() == self.exit_item.id() {
                 actions.push(UiAction::Exit);
+            } else if let Some((key, _)) = self
+                .monitor_items
+                .iter()
+                .find(|(_, item)| event.id() == item.id())
+            {
+                actions.push(UiAction::SelectMonitor(key.clone()));
             }
         }
 

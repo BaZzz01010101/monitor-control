@@ -90,6 +90,7 @@ pub enum UiAction {
     },
     ClearShortcut(ShortcutTarget),
     PersistWindowState,
+    SelectMonitor(String),
     PreviewFeature {
         feature: FeatureId,
         value: u32,
@@ -106,9 +107,16 @@ pub enum WorkerRequest {
     RefreshAll,
     ReadSnapshot,
     RefreshAutostart,
+    SelectMonitor { key: String },
     SetAutostart { enabled: bool, quiet: bool },
     WriteFeature { code: u8, value: u32 },
     SetInput { value: u32 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MonitorChoice {
+    pub key: String,
+    pub title: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,6 +131,9 @@ pub struct MonitorSnapshot {
     pub monitor_title: String,
     pub input_summary: String,
     pub hdr_status: String,
+    pub diagnostic_status: String,
+    pub monitor_choices: Vec<MonitorChoice>,
+    pub selected_monitor_key: String,
     pub brightness: FeatureSnapshot,
     pub contrast: FeatureSnapshot,
     pub selected_input: InputRoute,
@@ -187,6 +198,8 @@ pub struct UiState {
     pub selected_input: InputRoute,
     pub input_enabled: bool,
     pub no_monitor: bool,
+    pub monitor_choices: Vec<MonitorChoice>,
+    pub selected_monitor_key: String,
     pub status_text: String,
     pub autostart_enabled: bool,
     pub tb_shortcut: ShortcutFieldState,
@@ -206,6 +219,8 @@ impl Default for UiState {
             selected_input: InputRoute::None,
             input_enabled: false,
             no_monitor: true,
+            monitor_choices: Vec::new(),
+            selected_monitor_key: String::new(),
             status_text: "Ready".into(),
             autostart_enabled: false,
             tb_shortcut: ShortcutFieldState::default(),
@@ -235,6 +250,7 @@ pub struct AppController {
     brightness_last_user_change_ms: Option<u64>,
     contrast_last_user_change_ms: Option<u64>,
     input_last_user_change_ms: Option<u64>,
+    durable_selected_monitor_key: String,
 }
 
 impl Default for AppController {
@@ -250,6 +266,7 @@ impl Default for AppController {
             brightness_last_user_change_ms: None,
             contrast_last_user_change_ms: None,
             input_last_user_change_ms: None,
+            durable_selected_monitor_key: String::new(),
         }
     }
 }
@@ -261,6 +278,8 @@ impl AppController {
 
     pub fn hydrate_persisted_settings(&mut self, settings: &PersistedSettings) {
         self.state.autostart_enabled = settings.autostart_enabled;
+        self.state.selected_monitor_key = settings.selected_monitor_key.clone();
+        self.durable_selected_monitor_key = settings.selected_monitor_key.clone();
         self.state.tb_shortcut.value = normalize_shortcut_value(&settings.tb_shortcut);
         self.state.tb_shortcut.preview.clear();
         self.state.tb_shortcut.awaiting_final_key = false;
@@ -278,6 +297,7 @@ impl AppController {
     pub fn persisted_settings(&self) -> PersistedSettings {
         PersistedSettings {
             autostart_enabled: self.state.autostart_enabled,
+            selected_monitor_key: self.durable_selected_monitor_key.clone(),
             tb_shortcut: self.state.tb_shortcut.value.clone(),
             dp_shortcut: self.state.dp_shortcut.value.clone(),
             hdmi_shortcut: self.state.hdmi_shortcut.value.clone(),
@@ -364,6 +384,7 @@ impl AppController {
             UiAction::CommitShortcut { target, shortcut } => self.commit_shortcut(target, shortcut),
             UiAction::ClearShortcut(target) => self.clear_shortcut(target),
             UiAction::PersistWindowState => Vec::new(),
+            UiAction::SelectMonitor(key) => self.select_monitor(key),
             UiAction::SetInput(route) => self.set_input(route, now_ms),
             UiAction::PreviewFeature { feature, value } => {
                 self.preview_feature(feature, value, now_ms)
@@ -541,6 +562,15 @@ impl AppController {
         Vec::new()
     }
 
+    fn select_monitor(&mut self, key: String) -> Vec<ControllerEffect> {
+        self.state.selected_monitor_key = key.clone();
+        self.durable_selected_monitor_key = key.clone();
+        self.clear_optimistic_values();
+        vec![ControllerEffect::Worker(WorkerRequest::SelectMonitor {
+            key,
+        })]
+    }
+
     fn shortcut_state(&self, target: ShortcutTarget) -> &ShortcutFieldState {
         match target {
             ShortcutTarget::UsbC => &self.state.tb_shortcut,
@@ -572,6 +602,11 @@ impl AppController {
 
         self.state.monitor_title = snapshot.monitor_title;
         self.state.hdr_status = snapshot.hdr_status;
+        self.state.monitor_choices = snapshot.monitor_choices;
+        self.state.selected_monitor_key = snapshot.selected_monitor_key;
+        if !snapshot.diagnostic_status.is_empty() {
+            self.state.status_text = snapshot.diagnostic_status;
+        }
         self.apply_feature_snapshot(FeatureId::Brightness, snapshot.brightness, now_ms);
         self.apply_feature_snapshot(FeatureId::Contrast, snapshot.contrast, now_ms);
         if self.input_recently_changed(now_ms) {

@@ -143,6 +143,7 @@ fn list_monitors() -> Result<()> {
             model,
             monitor.capabilities.is_some()
         );
+        print_diagnostics(monitor);
     }
 
     match hdr::hdr_states() {
@@ -164,6 +165,7 @@ fn list_monitors() -> Result<()> {
 }
 
 fn print_caps(monitor: &WindowsMonitor) {
+    print_diagnostics(monitor);
     if let Some(raw) = &monitor.raw_capabilities {
         println!("{raw}");
     }
@@ -176,6 +178,15 @@ fn print_caps(monitor: &WindowsMonitor) {
             .collect::<Vec<_>>()
             .join(" ");
         println!("vcp={codes}");
+    }
+}
+
+fn print_diagnostics(monitor: &WindowsMonitor) {
+    if let Some(error) = &monitor.diagnostics.capability_error {
+        println!("diagnostic capability_error={error}");
+    }
+    if let Some(error) = &monitor.diagnostics.parse_error {
+        println!("diagnostic parse_error={error}");
     }
 }
 

@@ -193,6 +193,10 @@ impl Default for RetryPolicy {
 pub trait DdcBackend: Send + Sync + 'static {
     fn get_vcp_feature(&self, code: VcpCode) -> Result<VcpFeature, DdcError>;
     fn set_vcp_feature(&self, code: VcpCode, value: u32) -> Result<(), DdcError>;
+
+    fn synchronization_lock(&self) -> Option<&Mutex<()>> {
+        None
+    }
 }
 
 impl<T> DdcBackend for Arc<T>
@@ -205,6 +209,10 @@ where
 
     fn set_vcp_feature(&self, code: VcpCode, value: u32) -> Result<(), DdcError> {
         (**self).set_vcp_feature(code, value)
+    }
+
+    fn synchronization_lock(&self) -> Option<&Mutex<()>> {
+        (**self).synchronization_lock()
     }
 }
 
@@ -227,13 +235,23 @@ where
     }
 
     pub fn get(&self, code: VcpCode) -> Result<VcpFeature, DdcError> {
-        let _guard = self.gate.lock();
-        self.with_retries(|| self.backend.get_vcp_feature(code))
+        if let Some(gate) = self.backend.synchronization_lock() {
+            let _guard = gate.lock();
+            self.with_retries(|| self.backend.get_vcp_feature(code))
+        } else {
+            let _guard = self.gate.lock();
+            self.with_retries(|| self.backend.get_vcp_feature(code))
+        }
     }
 
     pub fn set(&self, code: VcpCode, value: u32) -> Result<(), DdcError> {
-        let _guard = self.gate.lock();
-        self.with_retries(|| self.backend.set_vcp_feature(code, value))
+        if let Some(gate) = self.backend.synchronization_lock() {
+            let _guard = gate.lock();
+            self.with_retries(|| self.backend.set_vcp_feature(code, value))
+        } else {
+            let _guard = self.gate.lock();
+            self.with_retries(|| self.backend.set_vcp_feature(code, value))
+        }
     }
 
     fn with_retries<T>(

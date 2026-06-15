@@ -233,228 +233,109 @@ fn input_route_to_ui_index(route: InputRoute) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{sync::mpsc, sync::Once};
 
-    #[test]
-    fn main_window_uses_the_compact_target_width() {
-        let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join("MainWindow.slint"),
-        )
-        .expect("failed to read MainWindow.slint");
+    use crate::app_controller::{FeatureId, FeatureState, ShortcutFieldState, UiPane};
 
-        assert!(source.contains("width: 570px;"));
-        assert!(source.contains("height: 480px;"));
+    use super::*;
+
+    static SLINT_BACKEND: Once = Once::new();
+
+    fn bridge() -> (UiBridge, mpsc::Receiver<UiAction>) {
+        SLINT_BACKEND.call_once(|| {
+            std::env::set_var("SLINT_BACKEND", "winit-software");
+        });
+        let (tx, rx) = mpsc::channel();
+        (UiBridge::new(tx).expect("bridge should initialize"), rx)
     }
 
     #[test]
-    fn main_window_declares_settings_pane_navigation() {
-        let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join("MainWindow.slint"),
-        )
-        .expect("failed to read MainWindow.slint");
+    fn bridge_maps_state_to_properties_and_callbacks_to_actions() {
+        let (bridge, rx) = bridge();
+        let state = UiState {
+            active_pane: UiPane::Settings,
+            monitor_title: "Dell U4025QW".into(),
+            input_summary: "USB-C".into(),
+            hdr_status: "Windows HDR: multiple displays, mixed".into(),
+            brightness: FeatureState {
+                value: 42,
+                maximum: 120,
+                text: "42".into(),
+                enabled: true,
+            },
+            contrast: FeatureState {
+                value: 77,
+                maximum: 100,
+                text: "77".into(),
+                enabled: true,
+            },
+            selected_input: InputRoute::UsbC,
+            input_enabled: true,
+            autostart_enabled: true,
+            status_text: "Monitor diagnostics: capabilities unavailable".into(),
+            tb_shortcut: ShortcutFieldState {
+                value: "Ctrl+Alt+T".into(),
+                preview: "Ctrl+".into(),
+                awaiting_final_key: true,
+                error_text: "Pick one more key".into(),
+            },
+            ..UiState::default()
+        };
 
-        assert!(source.contains("in property <bool> settings-open: false;"));
-        assert!(source.contains("callback open-settings();"));
-        assert!(source.contains("callback close-settings();"));
-        assert!(source.contains("callback toggle-autostart();"));
-        assert!(source.contains("in-out property <bool> autostart-enabled: false;"));
-        assert!(source.contains("in-out property <string> tb-shortcut: \"None\";"));
-        assert!(source.contains("in property <string> tb-shortcut-preview: \"\";"));
-        assert!(source.contains("in property <bool> tb-shortcut-awaiting-final-key: false;"));
-        assert!(source.contains("in property <string> tb-shortcut-error-text: \"\";"));
-        assert!(source.contains("in-out property <string> dp-shortcut: \"None\";"));
-        assert!(source.contains("in property <string> dp-shortcut-preview: \"\";"));
-        assert!(source.contains("in property <bool> dp-shortcut-awaiting-final-key: false;"));
-        assert!(source.contains("in property <string> dp-shortcut-error-text: \"\";"));
-        assert!(source.contains("in-out property <string> hdmi-shortcut: \"None\";"));
-        assert!(source.contains("in property <string> hdmi-shortcut-preview: \"\";"));
-        assert!(source.contains("in property <bool> hdmi-shortcut-awaiting-final-key: false;"));
-        assert!(source.contains("in property <string> hdmi-shortcut-error-text: \"\";"));
-        assert!(source.contains("if (root.settings-open) : SettingsPane"));
-        assert!(source.contains("if (!root.settings-open) : VerticalBox"));
-        assert!(source.contains("autostart-enabled <=> root.autostart-enabled;"));
-        assert!(source.contains("tb-shortcut <=> root.tb-shortcut;"));
-        assert!(source.contains("tb-shortcut-preview: root.tb-shortcut-preview;"));
-        assert!(
-            source.contains("tb-shortcut-awaiting-final-key: root.tb-shortcut-awaiting-final-key;")
+        bridge.apply_state(&state);
+        let window = bridge.window();
+
+        assert!(window.get_settings_open());
+        assert_eq!(window.get_monitor_title().to_string(), "Dell U4025QW");
+        assert_eq!(window.get_input_summary().to_string(), "USB-C");
+        assert_eq!(
+            window.get_hdr_status().to_string(),
+            "Windows HDR: multiple displays, mixed"
         );
-        assert!(source.contains("tb-shortcut-error-text: root.tb-shortcut-error-text;"));
-        assert!(source.contains("dp-shortcut <=> root.dp-shortcut;"));
-        assert!(source.contains("dp-shortcut-preview: root.dp-shortcut-preview;"));
-        assert!(
-            source.contains("dp-shortcut-awaiting-final-key: root.dp-shortcut-awaiting-final-key;")
+        assert_eq!(window.get_brightness_value(), 42);
+        assert_eq!(window.get_brightness_maximum(), 120);
+        assert!(window.get_brightness_enabled());
+        assert_eq!(window.get_contrast_value(), 77);
+        assert_eq!(window.get_selected_input(), 1);
+        assert!(window.get_input_enabled());
+        assert!(window.get_autostart_enabled());
+        assert_eq!(window.get_tb_shortcut().to_string(), "Ctrl+Alt+T");
+        assert_eq!(window.get_tb_shortcut_preview().to_string(), "Ctrl+");
+        assert!(window.get_tb_shortcut_awaiting_final_key());
+        assert_eq!(
+            window.get_tb_shortcut_error_text().to_string(),
+            "Pick one more key"
         );
-        assert!(source.contains("dp-shortcut-error-text: root.dp-shortcut-error-text;"));
-        assert!(source.contains("hdmi-shortcut <=> root.hdmi-shortcut;"));
-        assert!(source.contains("hdmi-shortcut-preview: root.hdmi-shortcut-preview;"));
-        assert!(source
-            .contains("hdmi-shortcut-awaiting-final-key: root.hdmi-shortcut-awaiting-final-key;"));
-        assert!(source.contains("hdmi-shortcut-error-text: root.hdmi-shortcut-error-text;"));
-        assert!(source.contains("callback deactivate-tb-shortcut-capture();"));
-        assert!(source.contains("callback deactivate-dp-shortcut-capture();"));
-        assert!(source.contains("callback deactivate-hdmi-shortcut-capture();"));
-        assert!(source.contains("callback normalize-shortcut-key(string) -> string;"));
-        assert!(source.contains("StatusBar {"));
-    }
-
-    #[test]
-    fn input_option_buttons_are_focusable_and_keyboard_activatable() {
-        let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join("InputOptionButton.slint"),
-        )
-        .expect("failed to read InputOptionButton.slint");
-
-        assert!(source.contains("FocusScope"));
-        assert!(source.contains("forward-focus:"));
-        assert!(source.contains("accessible-role: button;"));
-        assert!(source.contains("key-pressed(event)"));
-    }
-
-    #[test]
-    fn header_card_uses_a_settings_trigger_instead_of_refresh_text() {
-        let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join("HeaderCard.slint"),
-        )
-        .expect("failed to read HeaderCard.slint");
-
-        assert!(source.contains("callback open-settings;"));
-        assert!(!source.contains("text: \"Refresh\";"));
-        assert!(source.contains("gear_ui.svg"));
-        assert!(source.contains("mouse-cursor: pointer;"));
-    }
-
-    #[test]
-    fn settings_pane_contains_only_navigation_shell() {
-        let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join("SettingsPane.slint"),
-        )
-        .expect("failed to read SettingsPane.slint");
-
-        assert!(source.contains("callback back;"));
-        assert!(source.contains("Switch"));
-        assert!(source.contains("in-out property <bool> autostart-enabled: false;"));
-        assert!(source.contains("in-out property <string> tb-shortcut: \"None\";"));
-        assert!(source.contains("in property <string> tb-shortcut-error-text: \"\";"));
-        assert!(source.contains("in-out property <string> dp-shortcut: \"None\";"));
-        assert!(source.contains("in property <string> dp-shortcut-error-text: \"\";"));
-        assert!(source.contains("in-out property <string> hdmi-shortcut: \"None\";"));
-        assert!(source.contains("in property <string> hdmi-shortcut-error-text: \"\";"));
-        assert!(source.contains("toggle-autostart"));
-        assert!(source.contains("General"));
-        assert!(source.contains("Shortcuts"));
-        assert!(source.contains("Switch to TB"));
-        assert!(source.contains("Switch to DP"));
-        assert!(source.contains("Switch to HDMI"));
-        assert!(source.contains("ShortcutCaptureField"));
-        assert!(source.contains("value <=> root.tb-shortcut;"));
-        assert!(source.contains("value <=> root.dp-shortcut;"));
-        assert!(source.contains("value <=> root.hdmi-shortcut;"));
-        assert!(source.contains("preview-text: root.tb-shortcut-preview;"));
-        assert!(source.contains("preview-text: root.dp-shortcut-preview;"));
-        assert!(source.contains("preview-text: root.hdmi-shortcut-preview;"));
-        assert!(source.contains("awaiting-final-key: root.tb-shortcut-awaiting-final-key;"));
-        assert!(source.contains("awaiting-final-key: root.dp-shortcut-awaiting-final-key;"));
-        assert!(source.contains("awaiting-final-key: root.hdmi-shortcut-awaiting-final-key;"));
-        assert!(source.contains("root.deactivate-tb-shortcut-capture();"));
-        assert!(source.contains("root.deactivate-dp-shortcut-capture();"));
-        assert!(source.contains("root.deactivate-hdmi-shortcut-capture();"));
-        assert!(source.contains("root.commit-tb-shortcut(text);"));
-        assert!(source.contains("root.commit-dp-shortcut(text);"));
-        assert!(source.contains("normalize-shortcut-key(text) => {"));
-        assert!(source.contains("return root.normalize-shortcut-key(text);"));
-        assert!(source.contains("accessible-name: \"Switch to TB shortcut\";"));
-        assert!(source.contains("accessible-name: \"Switch to DP shortcut\";"));
-        assert!(source.contains("accessible-name: \"Switch to HDMI shortcut\";"));
-        assert!(source.contains("text: root.tb-shortcut-error-text;"));
-        assert!(source.contains("text: root.dp-shortcut-error-text;"));
-        assert!(source.contains("text: root.hdmi-shortcut-error-text;"));
-        assert!(source.contains("Start with Windows"));
-        assert!(source.contains("root-layout := VerticalLayout"));
-        assert!(source.contains("checked <=> root.autostart-enabled;"));
-        assert!(!source.contains("Autostart"));
-        assert!(!source.contains("text: \"Settings\";"));
-        assert!(source.contains("arrow_left_ui.svg"));
-        assert!(source.contains("ScrollView"));
-        assert!(source.contains("header := HorizontalLayout"));
-        assert!(source.contains("scroll := ScrollView"));
-        assert!(source.contains("body := VerticalBox"));
-        assert!(source.contains("focus-on-tab-navigation: false;"));
-        assert!(source.contains("init => {"));
-        assert!(source.contains("pane-focus.focus();"));
-        assert!(source.contains("viewport-width: self.visible-width;"));
-        assert!(source.contains("padding: 16px;"));
-        assert!(source.contains("padding-top: 12px;"));
-        assert!(source.contains("mouse-cursor: pointer;"));
-        assert!(source.contains("background: transparent;"));
-        assert!(source
-            .contains("focus-scope := FocusScope {\n        width: 0px;\n        height: 0px;"));
-        assert!(
-            source.contains("color: touch.has-hover || focus-scope.has-focus ? #0a365e : #2563eb;")
+        assert_eq!(
+            window.get_status_text().to_string(),
+            "Monitor diagnostics: capabilities unavailable"
         );
-        assert!(source.contains("key-pressed(event) => {"));
-        assert!(source.contains("event.text == Key.Escape"));
-        assert!(source.contains("root.back();"));
-        assert!(!source.contains("x: 16px;"));
-        assert!(!source.contains("y: 16px;"));
-        assert!(!source.contains("#eaf3ff"));
-    }
 
-    #[test]
-    fn shortcut_capture_field_declares_keyboard_capture_behavior() {
-        let source = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("ui")
-                .join("ShortcutCaptureField.slint"),
-        )
-        .expect("failed to read ShortcutCaptureField.slint");
+        window.invoke_open_settings();
+        window.invoke_toggle_autostart();
+        window.invoke_select_input(2);
+        window.invoke_brightness_preview(63);
+        window.invoke_commit_hdmi_shortcut("Ctrl+Alt+H".into());
 
-        assert!(source.contains("in-out property <string> value: \"None\";"));
-        assert!(source.contains("in property <string> preview-text: \"\";"));
-        assert!(source.contains("in property <bool> awaiting-final-key: false;"));
-        assert!(source.contains("callback deactivate-capture();"));
-        assert!(source.contains("callback preview-shortcut(string);"));
-        assert!(source.contains("callback commit-shortcut(string);"));
-        assert!(source.contains("callback clear-shortcut();"));
-        assert!(source.contains("callback normalize-shortcut-key(string) -> string;"));
-        assert!(source.contains("FocusScope"));
-        assert!(source.contains("changed has-focus => {"));
-        assert!(source.contains("key-pressed(event)"));
-        assert!(source.contains("key-released(event)"));
-        assert!(source.contains("focus-lost(reason)"));
-        assert!(source.contains("border-width: focus-scope.has-focus ? 2px : 1px;"));
-        assert!(source.contains("focus-scope.has-focus ? #1d4ed8"));
-        assert!(source.contains("Key.Return"));
-        assert!(source.contains("Key.Backspace"));
-        assert!(source.contains("Key.Escape"));
-        assert!(source.contains("root.deactivate-capture();"));
-        assert!(source.contains("root.preview-shortcut("));
-        assert!(source.contains("root.commit-shortcut("));
-        assert!(source.contains("root.clear-shortcut();"));
-        assert!(source.contains("root.normalize-shortcut-key(text)"));
-        assert!(source.contains("event.modifiers.meta"));
-        assert!(source.contains("event.text == Key.Space"));
-        assert!(source.contains("event.text == Key.Tab"));
-        assert!(source.contains("event.text == Key.Backtab"));
-        assert!(source.contains("Alt+Shift"));
-        assert!(source.contains("Ctrl+Shift"));
-        assert!(source.contains("function committed-modifier-prefix("));
-        assert!(source.contains("if prefix == \"\" {"));
-        assert!(source.contains("root.preview-text"));
-        assert!(!source.contains("callback activate-capture();"));
-        assert!(!source.contains("callback cancel-capture();"));
-        assert!(!source.contains("root.cancel-capture();"));
-        assert!(!source.contains("clear-focus();"));
-        assert!(!source.contains("LineEdit"));
-        assert!(!source.contains("TextInput"));
+        assert_eq!(rx.recv().unwrap(), UiAction::OpenSettings);
+        assert_eq!(rx.recv().unwrap(), UiAction::ToggleAutostart);
+        assert_eq!(
+            rx.recv().unwrap(),
+            UiAction::SetInput(InputRoute::DisplayPort)
+        );
+        assert_eq!(
+            rx.recv().unwrap(),
+            UiAction::PreviewFeature {
+                feature: FeatureId::Brightness,
+                value: 63,
+            }
+        );
+        assert_eq!(
+            rx.recv().unwrap(),
+            UiAction::CommitShortcut {
+                target: ShortcutTarget::Hdmi,
+                shortcut: "Ctrl+Alt+H".into(),
+            }
+        );
     }
 }

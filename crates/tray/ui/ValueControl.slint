@@ -14,6 +14,12 @@ export component ValueControl inherits Rectangle {
     background: transparent;
     min-height: 52px;
 
+    changed current-value => {
+        if slider.value != root.current-value {
+            slider.value = root.current-value;
+        }
+    }
+
     HorizontalLayout {
         spacing: 12px;
         padding-left: 10px;

@@ -102,8 +102,11 @@ fn us_label_from_scan_code(scan_code: u32) -> Option<&'static str> {
 }
 
 fn us_label_from_virtual_key(vk: u16) -> Option<String> {
-    if (b'A'..=b'Z').contains(&(vk as u8)) || (b'0'..=b'9').contains(&(vk as u8)) {
-        return Some(char::from(vk as u8).to_string());
+    let Ok(vk) = u8::try_from(vk) else {
+        return None;
+    };
+    if vk.is_ascii_uppercase() || vk.is_ascii_digit() {
+        return Some(char::from(vk).to_string());
     }
 
     match vk {

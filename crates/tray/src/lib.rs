@@ -1,6 +1,7 @@
 pub mod app_controller;
 pub mod debug_ui;
 pub mod hotkeys;
+pub mod logger;
 pub mod monitor_text;
 pub mod persistence;
 pub mod shortcut_capture;

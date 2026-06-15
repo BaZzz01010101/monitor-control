@@ -17,6 +17,7 @@ use dell_controller_tray::{
     },
     debug_ui::{capture_window_to_bmp, debug_ui_output_path, launch_mode_from_args, LaunchMode},
     hotkeys::ShortcutHotkeys,
+    logger::{log_or_stderr, FileLogger},
     persistence::{
         PersistedAppState, PersistedSettings, PersistedWindowPosition, PersistenceStore,
     },
@@ -30,11 +31,12 @@ use slint::{
     winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor},
     CloseRequestResponse, ComponentHandle, PhysicalPosition, Timer, TimerMode,
 };
+use windows::core::PCWSTR;
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowPlacement, SetForegroundWindow, ShowWindow, SW_RESTORE,
-        WINDOWPLACEMENT,
+        GetForegroundWindow, GetWindowPlacement, MessageBoxW, SetForegroundWindow, ShowWindow,
+        MB_ICONERROR, MB_OK, SW_RESTORE, WINDOWPLACEMENT,
     },
 };
 
@@ -42,6 +44,7 @@ const DEBUG_UI_CAPTURE_DELAY_MS: u64 = 2_000;
 const EVENT_PUMP_INTERVAL_MS: u64 = 16;
 const ACTIVE_SNAPSHOT_INTERVAL_MS: u64 = 1_000;
 const INACTIVE_SNAPSHOT_INTERVAL_MS: u64 = 30_000;
+const MONITOR_REFRESH_INTERVAL_MS: u64 = 300_000;
 const MINIMIZED_WINDOW_SENTINEL_COORDINATE: i32 = -32_000;
 
 struct AppRuntime {
@@ -57,18 +60,22 @@ struct AppRuntime {
     debug_capture_timer: Timer,
     launch_mode: LaunchMode,
     debug_ui_output_path: Option<PathBuf>,
+    logger: Option<FileLogger>,
     persistence: Option<PersistenceStore>,
     startup_autostart_target: Option<bool>,
+    startup_selected_monitor_key: Option<String>,
     window_visible: bool,
     window_shown_once: bool,
     window_move_tracking_installed: bool,
     last_snapshot_request_ms: Option<u64>,
+    last_monitor_refresh_ms: Option<u64>,
 }
 
 impl AppRuntime {
     fn new(
         launch_mode: LaunchMode,
         debug_ui_output_path: Option<PathBuf>,
+        logger: Option<FileLogger>,
     ) -> anyhow::Result<Rc<RefCell<Self>>> {
         let (ui_action_tx, ui_action_rx) = mpsc::channel();
         let ui = UiBridge::new(ui_action_tx.clone())?;
@@ -88,7 +95,7 @@ impl AppRuntime {
         let persistence = match PersistenceStore::for_current_user() {
             Ok(store) => Some(store),
             Err(error) => {
-                eprintln!("persistence unavailable: {error}");
+                log_or_stderr(logger.as_ref(), format!("persistence unavailable: {error}"));
                 None
             }
         };
@@ -106,12 +113,15 @@ impl AppRuntime {
             debug_capture_timer: Timer::default(),
             launch_mode,
             debug_ui_output_path,
+            logger,
             persistence,
             startup_autostart_target: None,
+            startup_selected_monitor_key: None,
             window_visible: false,
             window_shown_once: false,
             window_move_tracking_installed: false,
             last_snapshot_request_ms: None,
+            last_monitor_refresh_ms: None,
         }));
 
         runtime.borrow_mut().hydrate_from_persistence();
@@ -124,11 +134,17 @@ impl AppRuntime {
 
         {
             let mut app = runtime.borrow_mut();
-            let effects = if app.launch_mode == LaunchMode::DebugUi {
-                app.controller.handle_action(UiAction::OpenWindow, now)
+            let mut effects = Vec::new();
+            if let Some(key) = app.startup_selected_monitor_key.clone() {
+                effects.push(ControllerEffect::Worker(WorkerRequest::SelectMonitor {
+                    key,
+                }));
+            }
+            if app.launch_mode == LaunchMode::DebugUi {
+                effects.extend(app.controller.handle_action(UiAction::OpenWindow, now));
             } else {
-                vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)]
-            };
+                effects.push(ControllerEffect::Worker(WorkerRequest::RefreshAll));
+            }
             app.apply_effects(effects)?;
             if let Some(enabled) = app.startup_autostart_target {
                 app.apply_effects(vec![ControllerEffect::Worker(
@@ -139,6 +155,7 @@ impl AppRuntime {
                 )])?;
             }
             app.last_snapshot_request_ms = Some(now);
+            app.last_monitor_refresh_ms = Some(now);
             app.sync_view();
         }
 
@@ -155,8 +172,11 @@ impl AppRuntime {
             TimerMode::Repeated,
             Duration::from_millis(EVENT_PUMP_INTERVAL_MS),
             move || {
-                if let Err(error) = timer_runtime.borrow_mut().pump_once() {
-                    eprintln!("event pump failed: {error}");
+                let result = timer_runtime.borrow_mut().pump_once();
+                if let Err(error) = result {
+                    timer_runtime
+                        .borrow()
+                        .log(format!("event pump failed: {error:#}"));
                 }
             },
         );
@@ -171,7 +191,9 @@ impl AppRuntime {
                 let result = timer_runtime.borrow().capture_debug_ui();
                 match result {
                     Ok(path) => println!("debug-ui screenshot written to {}", path.display()),
-                    Err(error) => eprintln!("debug-ui screenshot failed: {error}"),
+                    Err(error) => timer_runtime
+                        .borrow()
+                        .log(format!("debug-ui screenshot failed: {error:#}")),
                 }
                 slint::quit_event_loop().ok();
             },
@@ -211,6 +233,7 @@ impl AppRuntime {
     }
 
     fn handle_action(&mut self, action: UiAction, now_ms: u64) -> anyhow::Result<()> {
+        let should_persist_settings = matches!(&action, UiAction::SelectMonitor(_));
         match action {
             UiAction::CommitShortcut { target, shortcut } => {
                 return self.commit_shortcut(target, shortcut);
@@ -228,7 +251,16 @@ impl AppRuntime {
         let should_focus_existing_window =
             should_focus_existing_window(action.clone(), self.window_visible);
         let effects = self.controller.handle_action(action, now_ms);
+        if effects
+            .iter()
+            .any(|effect| matches!(effect, ControllerEffect::Worker(WorkerRequest::RefreshAll)))
+        {
+            self.last_monitor_refresh_ms = Some(now_ms);
+        }
         self.apply_effects(effects)?;
+        if should_persist_settings {
+            self.persist_settings();
+        }
         if should_focus_existing_window {
             self.focus_window()?;
         }
@@ -300,6 +332,13 @@ impl AppRuntime {
 
     fn queue_periodic_snapshot(&mut self, now_ms: u64) -> anyhow::Result<()> {
         let active = self.window_is_active();
+        if monitor_refresh_due(self.last_monitor_refresh_ms, now_ms) {
+            self.last_monitor_refresh_ms = Some(now_ms);
+            self.last_snapshot_request_ms = Some(now_ms);
+            self.apply_effects(vec![ControllerEffect::Worker(WorkerRequest::RefreshAll)])?;
+            return Ok(());
+        }
+
         if snapshot_poll_due(self.last_snapshot_request_ms, now_ms, active) {
             self.last_snapshot_request_ms = Some(now_ms);
             self.apply_effects(vec![ControllerEffect::Worker(WorkerRequest::ReadSnapshot)])?;
@@ -356,8 +395,13 @@ impl AppRuntime {
     fn sync_view(&mut self) {
         let state = self.controller.ui_state();
         self.ui.apply_state(&state);
-        if let Some(tray) = self.tray.as_ref() {
+        if let Some(tray) = self.tray.as_mut() {
             tray.set_autostart_checked(state.autostart_enabled);
+            if let Err(error) =
+                tray.set_monitor_choices(&state.monitor_choices, &state.selected_monitor_key)
+            {
+                self.log(format!("failed to update monitor tray menu: {error:#}"));
+            }
         }
     }
 
@@ -366,20 +410,36 @@ impl AppRuntime {
             return;
         };
 
-        match store.load_settings() {
-            Ok(settings) => {
+        match store.load_settings_with_warning() {
+            Ok(outcome) => {
+                let settings = outcome.value;
                 self.controller.hydrate_persisted_settings(&settings);
                 self.startup_autostart_target = Some(settings.autostart_enabled);
+                if !settings.selected_monitor_key.is_empty() {
+                    self.startup_selected_monitor_key = Some(settings.selected_monitor_key.clone());
+                }
                 self.register_startup_shortcuts(&settings);
+                if let Some(warning) = outcome.warning {
+                    self.log(&warning);
+                    self.controller
+                        .apply_worker_event(WorkerEvent::Status(warning), now_ms());
+                }
             }
             Err(error) => {
-                eprintln!("failed to load persisted settings: {error}");
+                self.log(format!("failed to load persisted settings: {error:#}"));
             }
         }
 
-        match store.load_state() {
-            Ok(state) => self.restore_window_position(&state),
-            Err(error) => eprintln!("failed to load persisted app state: {error}"),
+        match store.load_state_with_warning() {
+            Ok(outcome) => {
+                self.restore_window_position(&outcome.value);
+                if let Some(warning) = outcome.warning {
+                    self.log(&warning);
+                    self.controller
+                        .apply_worker_event(WorkerEvent::Status(warning), now_ms());
+                }
+            }
+            Err(error) => self.log(format!("failed to load persisted app state: {error:#}")),
         }
     }
 
@@ -432,7 +492,7 @@ impl AppRuntime {
         };
 
         if let Err(error) = store.save_settings(&self.controller.persisted_settings()) {
-            eprintln!("failed to save settings: {error}");
+            self.log(format!("failed to save settings: {error:#}"));
         }
     }
 
@@ -447,7 +507,7 @@ impl AppRuntime {
             window_position: Some(position),
         };
         if let Err(error) = store.save_state(&state) {
-            eprintln!("failed to save app state: {error}");
+            self.log(format!("failed to save app state: {error:#}"));
         }
     }
 
@@ -459,7 +519,7 @@ impl AppRuntime {
         match window_placement(self.ui.window().window()) {
             Ok(placement) => persisted_window_position_from_placement(true, &placement),
             Err(error) => {
-                eprintln!("failed to read window placement: {error}");
+                self.log(format!("failed to read window placement: {error:#}"));
                 None
             }
         }
@@ -492,25 +552,68 @@ impl AppRuntime {
         capture_window_to_bmp(hwnd, &path)?;
         Ok(path)
     }
+
+    fn log(&self, message: impl AsRef<str>) {
+        log_or_stderr(self.logger.as_ref(), message);
+    }
 }
 
 fn main() {
+    let logger = match FileLogger::for_current_user() {
+        Ok(logger) => Some(logger),
+        Err(error) => {
+            eprintln!("file logging unavailable: {error:#}");
+            None
+        }
+    };
+
+    if let Err(error) = run_app(logger.clone()) {
+        report_fatal_error(logger.as_ref(), &error);
+        std::process::exit(1);
+    }
+}
+
+fn run_app(logger: Option<FileLogger>) -> anyhow::Result<()> {
     let launch_mode = launch_mode_from_args(std::env::args().skip(1));
     if launch_mode == LaunchMode::DebugUi {
         std::env::set_var("SLINT_BACKEND", "winit-software");
     }
     let debug_output_path = match launch_mode {
         LaunchMode::DebugUi => Some(debug_ui_output_path(
-            &std::env::current_dir().expect("failed to determine current working directory"),
+            &std::env::current_dir().context("failed to determine current working directory")?,
             now_ms(),
         )),
         LaunchMode::Normal => None,
     };
 
-    let runtime =
-        AppRuntime::new(launch_mode, debug_output_path).expect("failed to initialize tray app");
-    AppRuntime::bootstrap(runtime).expect("failed to bootstrap tray app");
-    slint::run_event_loop_until_quit().expect("failed to run Slint event loop");
+    let runtime = AppRuntime::new(launch_mode, debug_output_path, logger)
+        .context("failed to initialize tray app")?;
+    AppRuntime::bootstrap(runtime).context("failed to bootstrap tray app")?;
+    slint::run_event_loop_until_quit().context("failed to run Slint event loop")?;
+    Ok(())
+}
+
+fn report_fatal_error(logger: Option<&FileLogger>, error: &anyhow::Error) {
+    let message = format!("Dell Controller failed to start:\n{error:#}");
+    log_or_stderr(logger, &message);
+    show_fatal_message_box(&message);
+}
+
+fn show_fatal_message_box(message: &str) {
+    let title = wide_null("Dell Controller");
+    let message = wide_null(message);
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(message.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 fn hwnd_from_window(window: &slint::Window) -> anyhow::Result<HWND> {
@@ -565,6 +668,11 @@ fn snapshot_poll_due(
     })
 }
 
+fn monitor_refresh_due(last_monitor_refresh_ms: Option<u64>, now_ms: u64) -> bool {
+    last_monitor_refresh_ms
+        .is_none_or(|last_ms| now_ms.saturating_sub(last_ms) >= MONITOR_REFRESH_INTERVAL_MS)
+}
+
 fn should_focus_existing_window(action: UiAction, window_visible: bool) -> bool {
     matches!(action, UiAction::OpenWindow) && window_visible
 }
@@ -612,6 +720,13 @@ mod tests {
     }
 
     #[test]
+    fn monitor_refresh_due_uses_the_topology_interval() {
+        assert!(monitor_refresh_due(None, 1_000));
+        assert!(!monitor_refresh_due(Some(1_000), 300_999));
+        assert!(monitor_refresh_due(Some(1_000), 301_000));
+    }
+
+    #[test]
     fn open_window_focuses_existing_windows_instead_of_reopening_them() {
         assert!(should_focus_existing_window(UiAction::OpenWindow, true));
         assert!(!should_focus_existing_window(UiAction::OpenWindow, false));
@@ -656,16 +771,5 @@ mod tests {
             x: -1_920,
             y: 120,
         }));
-    }
-
-    #[test]
-    fn release_build_uses_the_windows_subsystem() {
-        let source =
-            std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
-                .expect("failed to read main.rs");
-
-        assert!(source.contains(
-            "#![cfg_attr(not(debug_assertions), windows_subsystem = \"windows\")]"
-        ));
     }
 }

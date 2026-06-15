@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 dell-controller-core = { path = "../core" }
-global-hotkey = { path = "../../../global-hotkey" }
+global-hotkey = { git = "https://github.com/BaZzz01010101/global-hotkey.git", rev = "1605413" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 raw-window-handle = "0.6"
 serde.workspace = true
