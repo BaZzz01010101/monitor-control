@@ -4,6 +4,7 @@ use crate::{
     profile::{MonitorId, PhysicalMonitor},
     snapshot::Snapshot,
 };
+use log::debug;
 
 #[cfg(windows)]
 mod imp {
@@ -103,6 +104,7 @@ mod imp {
                         "GetVCPFeatureAndVCPFeatureReply failed for {code}"
                     )));
                 }
+                debug!("get_vcp_feature code={}: current={}, max={}", code, current, maximum);
                 Ok(VcpFeature {
                     code,
                     current,
@@ -118,6 +120,7 @@ mod imp {
                         "SetVCPFeature failed for {code}"
                     )));
                 }
+                debug!("set_vcp_feature code={}: value={}", code, value);
                 Ok(())
             }
         }
@@ -237,6 +240,7 @@ mod imp {
                 }
             }
 
+            debug!("enumerated {} monitor(s)", monitors.len());
             Ok(monitors)
         }
     }

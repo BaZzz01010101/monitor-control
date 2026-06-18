@@ -1,3 +1,4 @@
+use log::{info, error, debug};
 use std::{
     collections::VecDeque,
     sync::mpsc::{self, Receiver, Sender},
@@ -34,6 +35,7 @@ impl WorkerHandle {
 pub fn spawn_worker(event_tx: Sender<WorkerEvent>) -> WorkerHandle {
     let (request_tx, request_rx) = mpsc::channel();
     thread::spawn(move || run_worker(request_rx, event_tx));
+    debug!("worker thread spawned");
     WorkerHandle { request_tx }
 }
 
@@ -255,10 +257,12 @@ fn execute_worker_task<D: WorkerDevice>(
     match task {
         WorkerTask::RefreshAll => match device.refresh_monitors() {
             Ok(()) => {
+                info!("monitors refreshed");
                 emit_device_snapshot(device, event_tx, runtime);
                 let _ = event_tx.send(WorkerEvent::Status("Monitors refreshed".into()));
             }
             Err(error) => {
+                error!("monitor refresh failed: {error}");
                 emit_device_snapshot(device, event_tx, runtime);
                 let _ = event_tx.send(WorkerEvent::Error(format!(
                     "Monitor refresh failed: {error}"
@@ -308,15 +312,18 @@ fn execute_worker_task<D: WorkerDevice>(
             code,
             value,
             input_status,
-        } => match device.write_vcp(runtime.selected_monitor_key.as_deref(), code, value) {
-            Ok(()) if input_status => {
-                let _ = event_tx.send(WorkerEvent::Status(format!("Input set to {value:#X}")));
+        } => {
+            debug!("write vcp code={code:02X} value={value}");
+            match device.write_vcp(runtime.selected_monitor_key.as_deref(), code, value) {
+                Ok(()) if input_status => {
+                    let _ = event_tx.send(WorkerEvent::Status(format!("Input set to {value:#X}")));
+                }
+                Ok(()) => {}
+                Err(message) => {
+                    let _ = event_tx.send(WorkerEvent::Error(message));
+                }
             }
-            Ok(()) => {}
-            Err(message) => {
-                let _ = event_tx.send(WorkerEvent::Error(message));
-            }
-        },
+        }
     }
 }
 
@@ -457,16 +464,24 @@ fn read_feature(
     code: u8,
 ) -> FeatureSnapshot {
     match queue.get(VcpCode::new(code)) {
-        Ok(feature) => FeatureSnapshot {
-            value: feature.current.min(feature.maximum),
-            maximum: feature.maximum.max(1),
-            available: true,
-        },
-        Err(_) => FeatureSnapshot {
-            value: 0,
-            maximum: 100,
-            available: false,
-        },
+        Ok(feature) => {
+            let available = true;
+            debug!("read vcp code={code:02X}: available={available}");
+            FeatureSnapshot {
+                value: feature.current.min(feature.maximum),
+                maximum: feature.maximum.max(1),
+                available,
+            }
+        }
+        Err(_) => {
+            let available = false;
+            debug!("read vcp code={code:02X}: available={available}");
+            FeatureSnapshot {
+                value: 0,
+                maximum: 100,
+                available,
+            }
+        }
     }
 }
 
@@ -602,7 +617,10 @@ fn input_route_from_value(value: u32) -> InputRoute {
 
 fn hdr_status_text() -> String {
     match hdr::hdr_states() {
-        Ok(states) => hdr_status_text_from_states(&states),
+        Ok(states) => {
+            debug!("hdr states: {} display(s)", states.len());
+            hdr_status_text_from_states(&states)
+        }
         Err(_) => "Windows HDR: unavailable".into(),
     }
 }

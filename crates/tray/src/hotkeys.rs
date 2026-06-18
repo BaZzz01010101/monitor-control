@@ -1,3 +1,4 @@
+use log::{info, warn};
 use std::collections::HashMap;
 
 use anyhow::Context;
@@ -77,6 +78,7 @@ impl<R: HotKeyRegistrar> ShortcutHotkeys<R> {
             .as_ref()
             .is_some_and(|entry| entry.hotkey.id() == new_hotkey.id())
         {
+            info!("shortcut {target:?} registered as {shortcut}");
             return Ok(AssignmentOutcome {
                 displaced_target: None,
             });
@@ -93,19 +95,27 @@ impl<R: HotKeyRegistrar> ShortcutHotkeys<R> {
         if let Some(displaced_entry) = displaced_entry.as_ref() {
             self.registrar
                 .unregister(displaced_entry.hotkey)
-                .map_err(format_registration_error)?;
+                .map_err(|error| {
+                    let msg = format_registration_error(error);
+                    warn!("shortcut {target:?} registration failed: {msg}");
+                    msg
+                })?;
         }
 
         if let Err(error) = self.registrar.register(new_hotkey) {
             self.restore_displaced_entry(displaced_entry.as_ref());
-            return Err(format_registration_error(error));
+            let msg = format_registration_error(error);
+            warn!("shortcut {target:?} registration failed: {msg}");
+            return Err(msg);
         }
 
         if let Some(current_entry) = current_entry.as_ref() {
             if let Err(error) = self.registrar.unregister(current_entry.hotkey) {
                 let _ = self.registrar.unregister(new_hotkey);
                 self.restore_displaced_entry(displaced_entry.as_ref());
-                return Err(format_registration_error(error));
+                let msg = format_registration_error(error);
+                warn!("shortcut {target:?} registration failed: {msg}");
+                return Err(msg);
             }
         }
 
@@ -121,10 +131,12 @@ impl<R: HotKeyRegistrar> ShortcutHotkeys<R> {
             },
         );
 
+        info!("shortcut {target:?} registered as {shortcut}");
         Ok(AssignmentOutcome { displaced_target })
     }
 
     pub fn clear_shortcut(&mut self, target: ShortcutTarget) -> Result<(), String> {
+        info!("shortcut {target:?} cleared");
         let Some(entry) = self.registrations.get(&target).cloned() else {
             return Ok(());
         };

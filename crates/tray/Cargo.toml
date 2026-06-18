@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
 dell-controller-core = { path = "../core" }
 global-hotkey = { git = "https://github.com/BaZzz01010101/global-hotkey.git", rev = "1605413" }
 image = { version = "0.25", default-features = false, features = ["png"] }

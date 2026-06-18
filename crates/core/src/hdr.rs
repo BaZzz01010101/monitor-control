@@ -1,3 +1,5 @@
+use log::{debug, info};
+
 use crate::ddc::DdcError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,7 @@ pub fn hdr_states() -> Result<Vec<HdrState>, DdcError> {
             });
         }
 
+        debug!("queried {} display(s) for hdr state", states.len());
         Ok(states)
     }
 }
@@ -165,6 +168,7 @@ pub fn set_hdr_enabled(display_index: usize, enabled: bool) -> Result<(), DdcErr
                 "DisplayConfigSetDeviceInfo failed: {result}"
             )));
         }
+        info!("set hdr display {display_index} to {enabled}");
         Ok(())
     }
 }
