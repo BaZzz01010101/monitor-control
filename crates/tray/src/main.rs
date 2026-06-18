@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::Context;
+use log::{info, error, debug};
 use dell_controller_tray::{
     app_controller::{
         AppController, ControllerEffect, ShortcutTarget, UiAction, UiPane, WorkerEvent,
@@ -163,6 +164,7 @@ impl AppRuntime {
             Self::start_debug_capture(runtime);
         }
 
+        info!("bootstrap complete");
         Ok(())
     }
 
@@ -204,13 +206,15 @@ impl AppRuntime {
         let now = now_ms();
 
         while let Ok(action) = self.ui_actions.try_recv() {
-            self.handle_action(action, now)?;
+            self.handle_action(action, now)
+                .unwrap_or_else(|error| error!("handle_action failed: {error:#}"));
         }
 
         if let Some(tray) = self.tray.as_mut() {
             let actions = tray.drain_actions(now);
             for action in actions {
-                self.handle_action(action, now)?;
+                self.handle_action(action, now)
+                    .unwrap_or_else(|error| error!("tray action failed: {error:#}"));
             }
         }
 
@@ -225,8 +229,12 @@ impl AppRuntime {
         }
 
         let effects = self.controller.flush_pending(now);
-        self.apply_effects(effects)?;
-        self.queue_periodic_snapshot(now)?;
+        if let Err(error) = self.apply_effects(effects) {
+            error!("apply_effects failed: {error:#}");
+        }
+        if let Err(error) = self.queue_periodic_snapshot(now) {
+            error!("periodic snapshot failed: {error:#}");
+        }
         self.sync_view();
 
         Ok(())
@@ -303,6 +311,7 @@ impl AppRuntime {
 
     fn apply_effects(&mut self, effects: Vec<ControllerEffect>) -> anyhow::Result<()> {
         for effect in effects {
+            debug!("effect: {effect:?}");
             match effect {
                 ControllerEffect::ShowWindow => {
                     self.ui.show()?;
@@ -360,6 +369,7 @@ impl AppRuntime {
                 continue;
             }
 
+            debug!("hotkey: {target:?} -> input switch");
             let effects = self
                 .controller
                 .handle_action(UiAction::SetInput(target.input_route()), now_ms);
@@ -559,6 +569,8 @@ impl AppRuntime {
 }
 
 fn main() {
+    env_logger::init();
+    info!("starting dell-controller-tray");
     let logger = match FileLogger::for_current_user() {
         Ok(logger) => Some(logger),
         Err(error) => {
@@ -590,6 +602,7 @@ fn run_app(logger: Option<FileLogger>) -> anyhow::Result<()> {
         .context("failed to initialize tray app")?;
     AppRuntime::bootstrap(runtime).context("failed to bootstrap tray app")?;
     slint::run_event_loop_until_quit().context("failed to run Slint event loop")?;
+    info!("dell-controller-tray stopped");
     Ok(())
 }
 

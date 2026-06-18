@@ -1,3 +1,4 @@
+use log::{info, debug};
 use crate::persistence::PersistedSettings;
 use crate::value_controls::WriteThrottle;
 
@@ -345,6 +346,7 @@ impl AppController {
     }
 
     pub fn handle_action(&mut self, action: UiAction, now_ms: u64) -> Vec<ControllerEffect> {
+        debug!("action: {action:?}");
         match action {
             UiAction::OpenWindow => {
                 if self.window_hidden {
@@ -416,6 +418,7 @@ impl AppController {
     }
 
     pub fn apply_worker_event(&mut self, event: WorkerEvent, now_ms: u64) {
+        debug!("worker event: {event:?}");
         match event {
             WorkerEvent::Snapshot(snapshot) => self.apply_snapshot(snapshot, now_ms),
             WorkerEvent::AutostartState { enabled, status } => {
@@ -451,6 +454,7 @@ impl AppController {
             state.text = clamped.to_string();
             clamped
         };
+        debug!("feature {feature:?}: set to {clamped}");
         *self.feature_optimistic_value_mut(feature) = Some(clamped);
         *self.feature_last_user_change_mut(feature) = Some(now_ms);
 
@@ -487,6 +491,7 @@ impl AppController {
             state.text = clamped.to_string();
             clamped
         };
+        debug!("feature {feature:?}: set to {clamped}");
         *self.feature_optimistic_value_mut(feature) = Some(clamped);
         *self.feature_last_user_change_mut(feature) = Some(now_ms);
 
@@ -507,6 +512,7 @@ impl AppController {
     }
 
     fn set_input(&mut self, route: InputRoute, now_ms: u64) -> Vec<ControllerEffect> {
+        debug!("input: {route:?}");
         let Some(value) = route.to_vcp_value() else {
             return Vec::new();
         };
@@ -526,6 +532,7 @@ impl AppController {
     }
 
     fn deactivate_shortcut_capture(&mut self, target: ShortcutTarget) -> Vec<ControllerEffect> {
+        info!("shortcut {target:?}: deactivate capture");
         let state = self.shortcut_state_mut(target);
         state.preview.clear();
         state.awaiting_final_key = false;
@@ -537,6 +544,7 @@ impl AppController {
         target: ShortcutTarget,
         preview: String,
     ) -> Vec<ControllerEffect> {
+        info!("shortcut {target:?}: preview");
         let state = self.shortcut_state_mut(target);
         state.preview = preview;
         state.awaiting_final_key = true;
@@ -549,6 +557,7 @@ impl AppController {
         target: ShortcutTarget,
         shortcut: String,
     ) -> Vec<ControllerEffect> {
+        info!("shortcut {target:?}: commit");
         let state = self.shortcut_state_mut(target);
         state.value = normalize_shortcut_value(&shortcut);
         state.preview.clear();
@@ -558,6 +567,7 @@ impl AppController {
     }
 
     fn clear_shortcut(&mut self, target: ShortcutTarget) -> Vec<ControllerEffect> {
+        info!("shortcut {target:?}: clear");
         *self.shortcut_state_mut(target) = ShortcutFieldState::default();
         Vec::new()
     }

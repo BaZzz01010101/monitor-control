@@ -1,3 +1,4 @@
+use log::trace;
 use std::sync::mpsc::Sender;
 
 use anyhow::Context;
@@ -31,6 +32,7 @@ impl UiBridge {
     }
 
     pub fn apply_state(&self, state: &UiState) {
+        trace!("bridging state to ui");
         self.window
             .set_settings_open(state.active_pane == crate::app_controller::UiPane::Settings);
         self.window
