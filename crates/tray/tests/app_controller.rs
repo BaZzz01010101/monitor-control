@@ -29,6 +29,8 @@ fn sample_snapshot() -> MonitorSnapshot {
         selected_input: InputRoute::DisplayPort,
         input_enabled: true,
         has_monitor: true,
+        hdr_enabled: true,
+        hdr_available: true,
     }
 }
 
@@ -119,6 +121,86 @@ fn toggle_autostart_updates_ui_state_immediately() {
         })]
     );
     assert!(controller.ui_state().autostart_enabled);
+}
+
+#[test]
+fn hdr_toggle_waits_for_worker_confirmation() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_enabled = false;
+    snapshot.hdr_available = true;
+    snapshot.hdr_status = "Windows HDR: Off".into();
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 900);
+
+    let effects = controller.handle_action(UiAction::ToggleHdr(true), 1_000);
+
+    assert_eq!(
+        effects,
+        vec![ControllerEffect::Worker(WorkerRequest::SetHdr {
+            enabled: true,
+        })]
+    );
+    assert!(!controller.ui_state().hdr_enabled);
+    assert!(!controller.ui_state().hdr_toggle_enabled);
+    assert!(controller
+        .handle_action(UiAction::ToggleHdr(true), 1_010)
+        .is_empty());
+
+    let mut confirmed = sample_snapshot();
+    confirmed.hdr_enabled = true;
+    confirmed.hdr_available = true;
+    controller.apply_worker_event(WorkerEvent::Snapshot(confirmed), 1_020);
+
+    assert!(controller.ui_state().hdr_enabled);
+    assert!(!controller.ui_state().hdr_toggle_enabled);
+
+    controller.apply_worker_event(
+        WorkerEvent::HdrUpdateFinished {
+            enabled: true,
+            error: None,
+        },
+        1_030,
+    );
+
+    assert!(controller.ui_state().hdr_enabled);
+    assert!(controller.ui_state().hdr_toggle_enabled);
+    assert_eq!(controller.ui_state().status_text, "Windows HDR enabled");
+}
+
+#[test]
+fn failed_hdr_toggle_restores_confirmed_state_and_reports_error() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_enabled = false;
+    snapshot.hdr_available = true;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot.clone()), 900);
+    controller.handle_action(UiAction::ToggleHdr(true), 1_000);
+
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 1_010);
+    controller.apply_worker_event(
+        WorkerEvent::HdrUpdateFinished {
+            enabled: true,
+            error: Some("HDR update failed: Windows rejected the change".into()),
+        },
+        1_020,
+    );
+
+    assert!(!controller.ui_state().hdr_enabled);
+    assert!(controller.ui_state().hdr_toggle_enabled);
+    assert_eq!(
+        controller.ui_state().status_text,
+        "HDR update failed: Windows rejected the change"
+    );
+}
+
+#[test]
+fn unavailable_hdr_toggle_is_ignored() {
+    let mut controller = AppController::default();
+
+    let effects = controller.handle_action(UiAction::ToggleHdr(true), 1_000);
+
+    assert!(effects.is_empty());
+    assert!(!controller.ui_state().hdr_enabled);
 }
 
 #[test]
@@ -359,6 +441,8 @@ fn no_monitor_snapshot_disables_controls_and_resets_input() {
     snapshot.input_enabled = false;
     snapshot.input_summary = "Input".into();
     snapshot.hdr_status = "Windows HDR: unavailable".into();
+    snapshot.hdr_enabled = false;
+    snapshot.hdr_available = false;
     snapshot.selected_input = InputRoute::None;
     snapshot.brightness.available = false;
     snapshot.contrast.available = false;
@@ -370,6 +454,8 @@ fn no_monitor_snapshot_disables_controls_and_resets_input() {
     assert!(!state.brightness.enabled);
     assert!(!state.contrast.enabled);
     assert!(!state.input_enabled);
+    assert!(!state.hdr_enabled);
+    assert!(!state.hdr_toggle_enabled);
     assert_eq!(state.selected_input, InputRoute::None);
 }
 
@@ -390,6 +476,8 @@ fn no_monitor_snapshot_disables_recently_changed_controls() {
     snapshot.input_enabled = false;
     snapshot.input_summary = "Input".into();
     snapshot.hdr_status = "Windows HDR: unavailable".into();
+    snapshot.hdr_enabled = false;
+    snapshot.hdr_available = false;
     snapshot.selected_input = InputRoute::None;
     snapshot.brightness.available = false;
     snapshot.contrast.available = false;

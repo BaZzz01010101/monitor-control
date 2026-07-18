@@ -40,6 +40,8 @@ impl UiBridge {
         self.window
             .set_input_summary(state.input_summary.clone().into());
         self.window.set_hdr_status(state.hdr_status.clone().into());
+        self.window.set_hdr_enabled(state.hdr_enabled);
+        self.window.set_hdr_toggle_enabled(state.hdr_toggle_enabled);
         self.window
             .set_brightness_value(state.brightness.value as i32);
         self.window
@@ -96,6 +98,11 @@ fn wire_callbacks(window: &MainWindow, action_tx: Sender<UiAction>) {
     let tx = action_tx.clone();
     window.on_toggle_autostart(move || {
         let _ = tx.send(UiAction::ToggleAutostart);
+    });
+
+    let tx = action_tx.clone();
+    window.on_toggle_hdr(move |enabled| {
+        let _ = tx.send(UiAction::ToggleHdr(enabled));
     });
 
     let tx = action_tx.clone();
@@ -258,7 +265,9 @@ mod tests {
             active_pane: UiPane::Settings,
             monitor_title: "Dell U4025QW".into(),
             input_summary: "USB-C".into(),
-            hdr_status: "Windows HDR: multiple displays, mixed".into(),
+            hdr_status: "Windows HDR: On".into(),
+            hdr_enabled: true,
+            hdr_toggle_enabled: true,
             brightness: FeatureState {
                 value: 42,
                 maximum: 120,
@@ -290,10 +299,9 @@ mod tests {
         assert!(window.get_settings_open());
         assert_eq!(window.get_monitor_title().to_string(), "Dell U4025QW");
         assert_eq!(window.get_input_summary().to_string(), "USB-C");
-        assert_eq!(
-            window.get_hdr_status().to_string(),
-            "Windows HDR: multiple displays, mixed"
-        );
+        assert_eq!(window.get_hdr_status().to_string(), "Windows HDR: On");
+        assert!(window.get_hdr_enabled());
+        assert!(window.get_hdr_toggle_enabled());
         assert_eq!(window.get_brightness_value(), 42);
         assert_eq!(window.get_brightness_maximum(), 120);
         assert!(window.get_brightness_enabled());
@@ -315,12 +323,14 @@ mod tests {
 
         window.invoke_open_settings();
         window.invoke_toggle_autostart();
+        window.invoke_toggle_hdr(true);
         window.invoke_select_input(2);
         window.invoke_brightness_preview(63);
         window.invoke_commit_hdmi_shortcut("Ctrl+Alt+H".into());
 
         assert_eq!(rx.recv().unwrap(), UiAction::OpenSettings);
         assert_eq!(rx.recv().unwrap(), UiAction::ToggleAutostart);
+        assert_eq!(rx.recv().unwrap(), UiAction::ToggleHdr(true),);
         assert_eq!(
             rx.recv().unwrap(),
             UiAction::SetInput(InputRoute::DisplayPort)

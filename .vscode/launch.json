@@ -9,6 +9,12 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "console": "externalTerminal",
+      "environment": [
+        {
+          "name": "RUST_LOG",
+          "value": "debug"
+        }
+      ],
       "preLaunchTask": "cargo build outputs"
     },
     {
@@ -16,7 +22,9 @@
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}\\target\\debug\\dellctl.exe",
-      "args": ["monitors"],
+      "args": [
+        "monitors"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "cargo build outputs"
@@ -26,7 +34,11 @@
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}\\target\\debug\\dellctl.exe",
-      "args": ["get", "0", "brightness"],
+      "args": [
+        "get",
+        "0",
+        "brightness"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "cargo build outputs"
@@ -36,7 +48,10 @@
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}\\target\\debug\\dellctl.exe",
-      "args": ["snapshot", "0"],
+      "args": [
+        "snapshot",
+        "0"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "cargo build outputs"
@@ -46,7 +61,10 @@
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}\\target\\debug\\dell-lab.exe",
-      "args": ["probe", "0"],
+      "args": [
+        "probe",
+        "0"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "preLaunchTask": "cargo build outputs"

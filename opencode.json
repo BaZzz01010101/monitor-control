@@ -1,0 +1,65 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "koboldcpp": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "KoboldCpp local",
+      "options": {
+        "baseURL": "http://127.0.0.1:5001/v1",
+        "apiKey": "sk-local"
+      },
+      "models": {
+        "YOUR_MODEL_ID_FROM_V1_MODELS": {
+          "name": "KoboldCpp current model",
+          "limit": {
+            "context": 65535,
+            "output": 4096
+          }
+        }
+      }
+    }
+  },
+  "model": "koboldcpp/Qwen3.6-40B-Deck-Opus-NEO-CODE-HERE-2T-OT-Q4_K_M",
+  "small_model": "koboldcpp/Qwen3.6-40B-Deck-Opus-NEO-CODE-HERE-2T-OT-Q4_K_M",
+  "lsp": {
+    "rust": {
+      "command": [
+        "rust-analyzer"
+      ],
+      "extensions": [
+        ".rs"
+      ],
+      "env": {
+        "RA_LOG": "rust_analyzer=info"
+      },
+      "initialization": {
+        "cargo": {
+          "buildScripts": {
+            "enable": true
+          },
+          "targetDir": true
+        },
+        "procMacro": {
+          "enable": true
+        },
+        "check": {
+          "command": "clippy"
+        }
+      }
+    },
+    "slint": {
+      "command": [
+        "slint-lsp"
+      ],
+      "extensions": [
+        ".slint"
+      ]
+    }
+  },
+  "permission": {
+    "lsp": "allow",
+    "external_directory": {
+      "D:/DEV/dell-controller.worktrees/**": "allow"
+    }
+  }
+}

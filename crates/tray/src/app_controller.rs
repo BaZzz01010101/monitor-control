@@ -1,6 +1,6 @@
-use log::{info, debug};
 use crate::persistence::PersistedSettings;
 use crate::value_controls::WriteThrottle;
+use log::{debug, info};
 
 pub const BRIGHTNESS_CODE: u8 = 0x10;
 pub const CONTRAST_CODE: u8 = 0x12;
@@ -80,6 +80,7 @@ pub enum UiAction {
     Exit,
     Refresh,
     ToggleAutostart,
+    ToggleHdr(bool),
     DeactivateShortcutCapture(ShortcutTarget),
     PreviewShortcut {
         target: ShortcutTarget,
@@ -110,6 +111,7 @@ pub enum WorkerRequest {
     RefreshAutostart,
     SelectMonitor { key: String },
     SetAutostart { enabled: bool, quiet: bool },
+    SetHdr { enabled: bool },
     WriteFeature { code: u8, value: u32 },
     SetInput { value: u32 },
 }
@@ -132,6 +134,8 @@ pub struct MonitorSnapshot {
     pub monitor_title: String,
     pub input_summary: String,
     pub hdr_status: String,
+    pub hdr_enabled: bool,
+    pub hdr_available: bool,
     pub diagnostic_status: String,
     pub monitor_choices: Vec<MonitorChoice>,
     pub selected_monitor_key: String,
@@ -145,7 +149,14 @@ pub struct MonitorSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkerEvent {
     Snapshot(MonitorSnapshot),
-    AutostartState { enabled: bool, status: String },
+    AutostartState {
+        enabled: bool,
+        status: String,
+    },
+    HdrUpdateFinished {
+        enabled: bool,
+        error: Option<String>,
+    },
     Status(String),
     Error(String),
 }
@@ -194,6 +205,8 @@ pub struct UiState {
     pub monitor_title: String,
     pub input_summary: String,
     pub hdr_status: String,
+    pub hdr_enabled: bool,
+    pub hdr_toggle_enabled: bool,
     pub brightness: FeatureState,
     pub contrast: FeatureState,
     pub selected_input: InputRoute,
@@ -215,6 +228,8 @@ impl Default for UiState {
             monitor_title: "No DDC/CI monitor detected".into(),
             input_summary: "Input".into(),
             hdr_status: "Windows HDR: unavailable".into(),
+            hdr_enabled: false,
+            hdr_toggle_enabled: false,
             brightness: FeatureState::default(),
             contrast: FeatureState::default(),
             selected_input: InputRoute::None,
@@ -252,6 +267,8 @@ pub struct AppController {
     contrast_last_user_change_ms: Option<u64>,
     input_last_user_change_ms: Option<u64>,
     durable_selected_monitor_key: String,
+    hdr_available: bool,
+    hdr_update_pending: bool,
 }
 
 impl Default for AppController {
@@ -268,6 +285,8 @@ impl Default for AppController {
             contrast_last_user_change_ms: None,
             input_last_user_change_ms: None,
             durable_selected_monitor_key: String::new(),
+            hdr_available: false,
+            hdr_update_pending: false,
         }
     }
 }
@@ -381,6 +400,14 @@ impl AppController {
                     quiet: false,
                 })]
             }
+            UiAction::ToggleHdr(enabled) => {
+                if !self.state.hdr_toggle_enabled || enabled == self.state.hdr_enabled {
+                    return Vec::new();
+                }
+                self.hdr_update_pending = true;
+                self.state.hdr_toggle_enabled = false;
+                vec![ControllerEffect::Worker(WorkerRequest::SetHdr { enabled })]
+            }
             UiAction::DeactivateShortcutCapture(target) => self.deactivate_shortcut_capture(target),
             UiAction::PreviewShortcut { target, preview } => self.preview_shortcut(target, preview),
             UiAction::CommitShortcut { target, shortcut } => self.commit_shortcut(target, shortcut),
@@ -426,6 +453,15 @@ impl AppController {
                 if !status.is_empty() {
                     self.state.status_text = status;
                 }
+            }
+            WorkerEvent::HdrUpdateFinished { enabled, error } => {
+                self.hdr_update_pending = false;
+                self.state.hdr_toggle_enabled = self.hdr_available;
+                self.state.status_text = match error {
+                    Some(error) => error,
+                    None if enabled => "Windows HDR enabled".into(),
+                    None => "Windows HDR disabled".into(),
+                };
             }
             WorkerEvent::Status(message) => {
                 self.state.status_text = message;
@@ -612,6 +648,9 @@ impl AppController {
 
         self.state.monitor_title = snapshot.monitor_title;
         self.state.hdr_status = snapshot.hdr_status;
+        self.state.hdr_enabled = snapshot.hdr_enabled;
+        self.hdr_available = snapshot.hdr_available;
+        self.state.hdr_toggle_enabled = self.hdr_available && !self.hdr_update_pending;
         self.state.monitor_choices = snapshot.monitor_choices;
         self.state.selected_monitor_key = snapshot.selected_monitor_key;
         if !snapshot.diagnostic_status.is_empty() {

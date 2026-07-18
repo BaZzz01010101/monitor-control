@@ -1,4 +1,4 @@
-use log::{info, error, debug};
+use log::{debug, error, info};
 use std::{
     collections::VecDeque,
     sync::mpsc::{self, Receiver, Sender},
@@ -88,6 +88,11 @@ trait WorkerDevice {
         code: u8,
         value: u32,
     ) -> Result<(), String>;
+    fn set_hdr_enabled(
+        &mut self,
+        selected_monitor_key: Option<&str>,
+        enabled: bool,
+    ) -> Result<(), String>;
     fn autostart_enabled(&self) -> bool;
     fn set_autostart_enabled(&mut self, enabled: bool) -> Result<(), String>;
 }
@@ -124,6 +129,14 @@ impl WorkerDevice for WindowsWorkerDevice {
         write_feature(&self.monitors, selected_monitor_key, code, value)
     }
 
+    fn set_hdr_enabled(
+        &mut self,
+        selected_monitor_key: Option<&str>,
+        enabled: bool,
+    ) -> Result<(), String> {
+        set_hdr_for_monitor(&self.monitors, selected_monitor_key, enabled)
+    }
+
     fn autostart_enabled(&self) -> bool {
         startup::is_autostart_enabled().unwrap_or(false)
     }
@@ -144,6 +157,9 @@ enum WorkerTask {
     SetAutostart {
         enabled: bool,
         quiet: bool,
+    },
+    SetHdr {
+        enabled: bool,
     },
     WriteVcp {
         code: u8,
@@ -194,6 +210,7 @@ impl PendingWorkerRequests {
             WorkerRequest::SetAutostart { enabled, quiet } => {
                 Some(WorkerTask::SetAutostart { enabled, quiet })
             }
+            WorkerRequest::SetHdr { enabled } => Some(WorkerTask::SetHdr { enabled }),
             WorkerRequest::WriteFeature { code, value } => {
                 Some(self.coalesce_write(code, value, false))
             }
@@ -308,6 +325,14 @@ fn execute_worker_task<D: WorkerDevice>(
                 }
             }
         }
+        WorkerTask::SetHdr { enabled } => {
+            let error = device
+                .set_hdr_enabled(runtime.selected_monitor_key.as_deref(), enabled)
+                .err()
+                .map(|error| format!("HDR update failed: {error}"));
+            emit_device_snapshot(device, event_tx, runtime);
+            let _ = event_tx.send(WorkerEvent::HdrUpdateFinished { enabled, error });
+        }
         WorkerTask::WriteVcp {
             code,
             value,
@@ -389,6 +414,44 @@ fn write_feature(
         .map_err(|error| format!("Set failed: {error}"))
 }
 
+fn set_hdr_for_monitor(
+    monitors: &[WindowsMonitor],
+    selected_monitor_key: Option<&str>,
+    enabled: bool,
+) -> Result<(), String> {
+    let choices = monitor_choices(monitors);
+    let index = strict_selected_monitor_index(&choices, selected_monitor_key)?;
+    let monitor = monitors
+        .get(index)
+        .ok_or_else(|| "Selected monitor is unavailable".to_string())?;
+    let target = monitor.display_target.as_ref().ok_or_else(|| {
+        monitor
+            .diagnostics
+            .display_mapping_error
+            .as_ref()
+            .map(|error| format!("HDR display mapping is unavailable: {error}"))
+            .unwrap_or_else(|| "HDR display mapping is unavailable".into())
+    })?;
+
+    hdr::set_hdr_enabled(target, enabled)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn strict_selected_monitor_index(
+    choices: &[MonitorChoice],
+    selected_monitor_key: Option<&str>,
+) -> Result<usize, String> {
+    match selected_monitor_key.filter(|key| !key.is_empty()) {
+        Some(key) => choices
+            .iter()
+            .position(|choice| choice.key == key)
+            .ok_or_else(|| "Selected monitor is unavailable".to_string()),
+        None if choices.is_empty() => Err("No monitor is selected".into()),
+        None => Ok(0),
+    }
+}
+
 fn build_snapshot(
     monitors: &[WindowsMonitor],
     selected_monitor_key: Option<&str>,
@@ -402,6 +465,8 @@ fn build_snapshot(
                 monitor_title: "No DDC/CI monitor detected".into(),
                 input_summary: "Input".into(),
                 hdr_status: "Windows HDR: unavailable".into(),
+                hdr_enabled: false,
+                hdr_available: false,
                 diagnostic_status: String::new(),
                 monitor_choices: choices,
                 selected_monitor_key: String::new(),
@@ -436,6 +501,7 @@ fn build_snapshot(
     let input_enabled = input.available || capability_supports_input;
     let ddc_failure = !brightness.available && !contrast.available && !input.available;
     let selected_monitor_key = choice.key.clone();
+    let (hdr_text, hdr_enabled_val, hdr_available_val) = hdr_info(monitor);
 
     DeviceSnapshot {
         snapshot: MonitorSnapshot {
@@ -444,7 +510,9 @@ fn build_snapshot(
                 monitor.info.model.as_deref(),
             ),
             input_summary: input.summary,
-            hdr_status: hdr_status_text(),
+            hdr_status: hdr_text,
+            hdr_enabled: hdr_enabled_val,
+            hdr_available: hdr_available_val,
             diagnostic_status: diagnostic_status(monitors),
             monitor_choices: choices,
             selected_monitor_key,
@@ -594,6 +662,11 @@ fn diagnostic_status(monitors: &[WindowsMonitor]) -> String {
                     .parse_error
                     .as_ref()
                     .map(|error| format!("{title}: capabilities parse failed ({error})")),
+                monitor
+                    .diagnostics
+                    .display_mapping_error
+                    .as_ref()
+                    .map(|error| format!("{title}: HDR mapping unavailable ({error})")),
             ]
         })
         .flatten()
@@ -615,40 +688,40 @@ fn input_route_from_value(value: u32) -> InputRoute {
     }
 }
 
-fn hdr_status_text() -> String {
-    match hdr::hdr_states() {
-        Ok(states) => {
-            debug!("hdr states: {} display(s)", states.len());
-            hdr_status_text_from_states(&states)
+fn hdr_info(monitor: &WindowsMonitor) -> (String, bool, bool) {
+    let Some(target) = monitor.display_target.as_ref() else {
+        return ("Windows HDR: unavailable".into(), false, false);
+    };
+    match hdr::hdr_state(target) {
+        Ok(state) => {
+            let text = hdr_status_text(&state);
+            let enabled = state.user_enabled;
+            let available = state.supported && !state.limited_by_policy;
+            (text, enabled, available)
         }
-        Err(_) => "Windows HDR: unavailable".into(),
+        Err(error) => {
+            debug!(
+                "HDR state unavailable for {}: {error}",
+                monitor.info.description
+            );
+            ("Windows HDR: unavailable".into(), false, false)
+        }
     }
 }
 
-fn hdr_status_text_from_states(states: &[hdr::HdrState]) -> String {
-    match states {
-        [state] => format!(
-            "Windows HDR: {}",
-            if state.enabled {
-                "On"
-            } else if state.supported {
-                "Available, off"
-            } else {
-                "Not supported"
-            }
-        ),
-        states if !states.is_empty() => {
-            let enabled = states.iter().filter(|state| state.enabled).count();
-            if enabled == 0 {
-                "Windows HDR: multiple displays, off".into()
-            } else if enabled == states.len() {
-                "Windows HDR: multiple displays, on".into()
-            } else {
-                "Windows HDR: multiple displays, mixed".into()
-            }
-        }
-        _ => "Windows HDR: unavailable".into(),
-    }
+fn hdr_status_text(state: &hdr::HdrState) -> String {
+    let status = if state.limited_by_policy {
+        "blocked by policy"
+    } else if !state.supported {
+        "Not supported"
+    } else if state.user_enabled && state.active {
+        "On"
+    } else if state.user_enabled {
+        "On (not active)"
+    } else {
+        "Off"
+    };
+    format!("Windows HDR: {status}")
 }
 
 #[cfg(test)]
@@ -662,6 +735,7 @@ mod tests {
         calls: Vec<String>,
         ddc_failure_snapshots: bool,
         missing_selected_monitor: bool,
+        hdr_error: Option<String>,
     }
 
     impl WorkerDevice for RecordingWorkerDevice {
@@ -699,6 +773,21 @@ mod tests {
             Ok(())
         }
 
+        fn set_hdr_enabled(
+            &mut self,
+            selected_monitor_key: Option<&str>,
+            enabled: bool,
+        ) -> Result<(), String> {
+            self.calls.push(format!(
+                "hdr:{}:{enabled}",
+                selected_monitor_key.unwrap_or("<none>")
+            ));
+            match self.hdr_error.take() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+
         fn autostart_enabled(&self) -> bool {
             false
         }
@@ -733,18 +822,22 @@ mod tests {
             selected_input: InputRoute::DisplayPort,
             input_enabled: true,
             has_monitor: true,
+            hdr_enabled: true,
+            hdr_available: true,
         }
     }
 
-    fn hdr_state(display_index: usize, supported: bool, enabled: bool) -> hdr::HdrState {
+    fn hdr_state(
+        supported: bool,
+        user_enabled: bool,
+        active: bool,
+        limited_by_policy: bool,
+    ) -> hdr::HdrState {
         hdr::HdrState {
-            display_index,
             supported,
-            enabled,
-            wide_color_enforced: false,
-            force_disabled: false,
-            bits_per_color_channel: 10,
-            color_encoding: "RGB".into(),
+            user_enabled,
+            active,
+            limited_by_policy,
         }
     }
 
@@ -828,6 +921,17 @@ mod tests {
             })
         );
         assert_eq!(pending.pop_next_task(), None);
+    }
+
+    #[test]
+    fn hdr_requests_are_dispatched_as_worker_tasks() {
+        let mut pending =
+            PendingWorkerRequests::from(vec![WorkerRequest::SetHdr { enabled: true }]);
+
+        assert_eq!(
+            pending.pop_next_task(),
+            Some(WorkerTask::SetHdr { enabled: true })
+        );
     }
 
     #[test]
@@ -946,14 +1050,94 @@ mod tests {
     }
 
     #[test]
-    fn hdr_status_uses_conservative_text_for_multiple_displays() {
+    fn hdr_status_describes_the_selected_monitor_state() {
         assert_eq!(
-            hdr_status_text_from_states(&[hdr_state(0, true, true)]),
+            hdr_status_text(&hdr_state(true, true, true, false)),
             "Windows HDR: On"
         );
         assert_eq!(
-            hdr_status_text_from_states(&[hdr_state(0, true, true), hdr_state(1, true, false),]),
-            "Windows HDR: multiple displays, mixed"
+            hdr_status_text(&hdr_state(true, false, false, false)),
+            "Windows HDR: Off"
+        );
+        assert_eq!(
+            hdr_status_text(&hdr_state(true, true, false, false)),
+            "Windows HDR: On (not active)"
+        );
+        assert_eq!(
+            hdr_status_text(&hdr_state(true, false, false, true)),
+            "Windows HDR: blocked by policy"
+        );
+    }
+
+    #[test]
+    fn hdr_selection_rejects_a_missing_explicit_monitor_without_fallback() {
+        let choices = vec![MonitorChoice {
+            key: "first-monitor".into(),
+            title: "First monitor".into(),
+        }];
+
+        let error = strict_selected_monitor_index(&choices, Some("missing-monitor")).unwrap_err();
+
+        assert_eq!(error, "Selected monitor is unavailable");
+        assert_eq!(strict_selected_monitor_index(&choices, None).unwrap(), 0);
+    }
+
+    #[test]
+    fn hdr_task_emits_confirmed_snapshot_before_completion() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut runtime = WorkerRuntimeState {
+            selected_monitor_key: Some("selected-monitor".into()),
+            consecutive_ddc_failures: 0,
+        };
+        let mut device = RecordingWorkerDevice::default();
+
+        execute_worker_task(
+            WorkerTask::SetHdr { enabled: true },
+            &mut device,
+            &event_tx,
+            &mut runtime,
+        );
+
+        assert_eq!(
+            device.calls,
+            vec!["hdr:selected-monitor:true", "snapshot:selected-monitor"]
+        );
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::HdrUpdateFinished {
+                enabled: true,
+                error: None,
+            }
+        );
+    }
+
+    #[test]
+    fn failed_hdr_task_still_refreshes_confirmed_state_before_error_completion() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut runtime = WorkerRuntimeState {
+            selected_monitor_key: Some("missing-monitor".into()),
+            consecutive_ddc_failures: 0,
+        };
+        let mut device = RecordingWorkerDevice {
+            hdr_error: Some("Selected monitor is unavailable".into()),
+            ..Default::default()
+        };
+
+        execute_worker_task(
+            WorkerTask::SetHdr { enabled: true },
+            &mut device,
+            &event_tx,
+            &mut runtime,
+        );
+
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::HdrUpdateFinished {
+                enabled: true,
+                error: Some("HDR update failed: Selected monitor is unavailable".into()),
+            }
         );
     }
 
@@ -977,6 +1161,14 @@ mod tests {
             _value: u32,
         ) -> Result<(), String> {
             unreachable!("write_vcp is not part of this test")
+        }
+
+        fn set_hdr_enabled(
+            &mut self,
+            _selected_monitor_key: Option<&str>,
+            _enabled: bool,
+        ) -> Result<(), String> {
+            unreachable!("set_hdr_enabled is not part of this test")
         }
 
         fn autostart_enabled(&self) -> bool {

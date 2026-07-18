@@ -23,6 +23,8 @@ export component MainWindow inherits Window {
     in property <string> monitor-title: "No DDC/CI monitor detected";
     in property <string> input-summary: "Input";
     in property <string> hdr-status: "Windows HDR: unavailable";
+    in property <bool> hdr-enabled: false;
+    in property <bool> hdr-toggle-enabled: false;
     in-out property <int> brightness-value: 0;
     in property <int> brightness-maximum: 100;
     in property <bool> brightness-enabled: false;
@@ -49,6 +51,7 @@ export component MainWindow inherits Window {
     callback open-settings();
     callback close-settings();
     callback toggle-autostart();
+    callback toggle-hdr(bool);
     callback deactivate-tb-shortcut-capture();
     callback preview-tb-shortcut(string);
     callback commit-tb-shortcut(string);
@@ -84,8 +87,13 @@ export component MainWindow inherits Window {
                 monitor-title: root.monitor-title;
                 input-summary: root.input-summary;
                 hdr-status: root.hdr-status;
+                hdr-enabled: root.hdr-enabled;
+                hdr-toggle-enabled: root.hdr-toggle-enabled;
                 open-settings => {
                     root.open-settings();
+                }
+                toggle-hdr(enabled) => {
+                    root.toggle-hdr(enabled);
                 }
             }
 

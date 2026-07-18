@@ -10,7 +10,6 @@ use std::{
 };
 
 use anyhow::Context;
-use log::{info, error, debug};
 use dell_controller_tray::{
     app_controller::{
         AppController, ControllerEffect, ShortcutTarget, UiAction, UiPane, WorkerEvent,
@@ -27,6 +26,7 @@ use dell_controller_tray::{
     worker::{spawn_worker, WorkerHandle},
 };
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState as GlobalHotKeyState};
+use log::{debug, error, info};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::{
     winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor},

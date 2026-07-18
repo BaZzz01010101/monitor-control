@@ -1,6 +1,7 @@
 use crate::{
     capabilities::Capabilities,
     ddc::{CommandQueue, DdcBackend, DdcError, RetryPolicy, VcpCode, VcpFeature},
+    hdr::{self, DisplayTargetId},
     profile::{MonitorId, PhysicalMonitor},
     snapshot::Snapshot,
 };
@@ -8,7 +9,7 @@ use log::debug;
 
 #[cfg(windows)]
 mod imp {
-    use std::sync::Arc;
+    use std::{mem::size_of, sync::Arc};
 
     use parking_lot::Mutex;
     use windows::core::BOOL;
@@ -20,7 +21,7 @@ mod imp {
             MC_VCP_CODE_TYPE, PHYSICAL_MONITOR,
         },
         Foundation::{HANDLE, LPARAM, RECT},
-        Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR},
+        Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW},
     };
 
     use super::*;
@@ -104,7 +105,10 @@ mod imp {
                         "GetVCPFeatureAndVCPFeatureReply failed for {code}"
                     )));
                 }
-                debug!("get_vcp_feature code={}: current={}, max={}", code, current, maximum);
+                debug!(
+                    "get_vcp_feature code={}: current={}, max={}",
+                    code, current, maximum
+                );
                 Ok(VcpFeature {
                     code,
                     current,
@@ -134,6 +138,7 @@ mod imp {
     pub struct MonitorDiagnostics {
         pub capability_error: Option<String>,
         pub parse_error: Option<String>,
+        pub display_mapping_error: Option<String>,
     }
 
     #[derive(Clone)]
@@ -142,6 +147,7 @@ mod imp {
         pub raw_capabilities: Option<String>,
         pub capabilities: Option<Capabilities>,
         pub diagnostics: MonitorDiagnostics,
+        pub display_target: Option<DisplayTargetId>,
         pub backend: Arc<WindowsDdcBackend>,
     }
 
@@ -168,6 +174,12 @@ mod imp {
     }
 
     pub fn enumerate_monitors() -> Result<Vec<WindowsMonitor>, DdcError> {
+        struct PendingMonitor {
+            source_name: Result<String, String>,
+            description: String,
+            backend: Arc<WindowsDdcBackend>,
+        }
+
         unsafe extern "system" fn enum_proc(
             monitor: HMONITOR,
             _hdc: HDC,
@@ -180,6 +192,7 @@ mod imp {
         }
 
         unsafe {
+            let topology_before = hdr::active_display_identities();
             let mut display_monitors = Vec::new();
             let ok = EnumDisplayMonitors(
                 None,
@@ -191,8 +204,9 @@ mod imp {
                 return Err(DdcError::Permanent("EnumDisplayMonitors failed".into()));
             }
 
-            let mut monitors = Vec::new();
+            let mut pending_monitors = Vec::new();
             for hmonitor in display_monitors {
+                let source_name = display_source_name(hmonitor).map_err(|error| error.to_string());
                 let mut count = 0;
                 GetNumberOfPhysicalMonitorsFromHMONITOR(hmonitor, &mut count)
                     .map_err(|error| DdcError::Transient(error.message().to_string()))?;
@@ -208,40 +222,101 @@ mod imp {
                         std::ptr::addr_of!(physical_monitor.hPhysicalMonitor).read_unaligned();
                     let description = wide_to_string(&description_field);
                     let backend = Arc::new(WindowsDdcBackend::new(handle));
-                    let capabilities_result = backend.capabilities_string();
-                    let (raw_capabilities, capability_error) = match capabilities_result {
-                        Ok(raw) => (Some(raw), None),
-                        Err(error) => (None, Some(error.to_string())),
-                    };
-                    let (capabilities, parse_error) = match raw_capabilities.as_ref() {
-                        Some(raw) => match Capabilities::parse(raw) {
-                            Ok(capabilities) => (Some(capabilities), None),
-                            Err(error) => (None, Some(error.to_string())),
-                        },
-                        None => (None, None),
-                    };
-                    let model = capabilities.as_ref().and_then(|caps| caps.model.clone());
-                    let index = monitors.len();
 
-                    monitors.push(WindowsMonitor {
-                        info: PhysicalMonitor {
-                            id: MonitorId(index.to_string()),
-                            description,
-                            model,
-                        },
-                        raw_capabilities,
-                        capabilities,
-                        diagnostics: MonitorDiagnostics {
-                            capability_error,
-                            parse_error,
-                        },
+                    pending_monitors.push(PendingMonitor {
+                        source_name: source_name.clone(),
+                        description,
                         backend,
                     });
                 }
             }
 
+            let physical_sources = pending_monitors
+                .iter()
+                .filter_map(|monitor| monitor.source_name.as_ref().ok().cloned())
+                .collect::<Vec<_>>();
+            let topology_after = hdr::active_display_identities();
+            let active_display_paths = match (topology_before, topology_after) {
+                (Ok(before), Ok(after)) if hdr::same_display_topology(&before, &after) => Ok(after),
+                (Ok(_), Ok(_)) => Err(DdcError::Transient(
+                    "display topology changed during DDC monitor enumeration".into(),
+                )),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            };
+            let mut monitors = Vec::with_capacity(pending_monitors.len());
+
+            for pending in pending_monitors {
+                let PendingMonitor {
+                    source_name,
+                    description,
+                    backend,
+                } = pending;
+                let display_mapping = match (&source_name, &active_display_paths) {
+                    (Ok(source_name), Ok(paths)) => {
+                        hdr::map_display_target(source_name, &physical_sources, paths)
+                            .map_err(|error| error.to_string())
+                    }
+                    (Err(error), _) => Err(error.clone()),
+                    (_, Err(error)) => Err(error.to_string()),
+                };
+                let (display_target, display_mapping_error) = match display_mapping {
+                    Ok(target) => (Some(target), None),
+                    Err(error) => {
+                        debug!("HDR display mapping unavailable for {description}: {error}");
+                        (None, Some(error))
+                    }
+                };
+                let capabilities_result = backend.capabilities_string();
+                let (raw_capabilities, capability_error) = match capabilities_result {
+                    Ok(raw) => (Some(raw), None),
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                let (capabilities, parse_error) = match raw_capabilities.as_ref() {
+                    Some(raw) => match Capabilities::parse(raw) {
+                        Ok(capabilities) => (Some(capabilities), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    },
+                    None => (None, None),
+                };
+                let model = capabilities.as_ref().and_then(|caps| caps.model.clone());
+                let index = monitors.len();
+
+                monitors.push(WindowsMonitor {
+                    info: PhysicalMonitor {
+                        id: MonitorId(index.to_string()),
+                        description,
+                        model,
+                    },
+                    raw_capabilities,
+                    capabilities,
+                    diagnostics: MonitorDiagnostics {
+                        capability_error,
+                        parse_error,
+                        display_mapping_error,
+                    },
+                    display_target,
+                    backend,
+                });
+            }
+
             debug!("enumerated {} monitor(s)", monitors.len());
             Ok(monitors)
+        }
+    }
+
+    unsafe fn display_source_name(hmonitor: HMONITOR) -> Result<String, DdcError> {
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(hmonitor, &mut info.monitorInfo).as_bool() {
+            return Err(DdcError::Permanent("GetMonitorInfoW failed".into()));
+        }
+        let source_name = wide_to_string(&info.szDevice);
+        if source_name.is_empty() {
+            Err(DdcError::Permanent(
+                "GetMonitorInfoW returned an empty display source name".into(),
+            ))
+        } else {
+            Ok(source_name)
         }
     }
 
@@ -261,6 +336,7 @@ mod imp {
     pub struct MonitorDiagnostics {
         pub capability_error: Option<String>,
         pub parse_error: Option<String>,
+        pub display_mapping_error: Option<String>,
     }
 
     pub struct WindowsDdcBackend;
@@ -285,6 +361,7 @@ mod imp {
         pub raw_capabilities: Option<String>,
         pub capabilities: Option<Capabilities>,
         pub diagnostics: MonitorDiagnostics,
+        pub display_target: Option<DisplayTargetId>,
         pub backend: Arc<WindowsDdcBackend>,
     }
 

@@ -144,24 +144,22 @@ fn list_monitors() -> Result<()> {
             monitor.capabilities.is_some()
         );
         print_diagnostics(monitor);
-    }
-
-    match hdr::hdr_states() {
-        Ok(states) if !states.is_empty() => {
-            for state in states {
-                println!(
-                    "hdr display={} supported={} enabled={} bits={}",
-                    state.display_index,
-                    state.supported,
-                    state.enabled,
-                    state.bits_per_color_channel
-                );
+        if let Some(target) = &monitor.display_target {
+            match hdr::hdr_state(target) {
+                Ok(state) => println!("{}", format_hdr_line(index, &state)),
+                Err(error) => println!("diagnostic hdr_state_error={error}"),
             }
         }
-        _ => {}
     }
 
     Ok(())
+}
+
+fn format_hdr_line(index: usize, state: &hdr::HdrState) -> String {
+    format!(
+        "hdr monitor={index} supported={} user_enabled={} active={} policy_limited={}",
+        state.supported, state.user_enabled, state.active, state.limited_by_policy
+    )
 }
 
 fn print_caps(monitor: &WindowsMonitor) {
@@ -187,6 +185,9 @@ fn print_diagnostics(monitor: &WindowsMonitor) {
     }
     if let Some(error) = &monitor.diagnostics.parse_error {
         println!("diagnostic parse_error={error}");
+    }
+    if let Some(error) = &monitor.diagnostics.display_mapping_error {
+        println!("diagnostic display_mapping_error={error}");
     }
 }
 
@@ -269,5 +270,25 @@ fn print_diff(diff: &SnapshotDiff) {
     }
     if diff.changed.is_empty() && diff.added.is_empty() && diff.removed.is_empty() {
         println!("no changes");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hdr_line_identifies_the_ddc_monitor_and_confirmed_windows_state() {
+        let state = hdr::HdrState {
+            supported: true,
+            user_enabled: true,
+            active: false,
+            limited_by_policy: false,
+        };
+
+        assert_eq!(
+            format_hdr_line(2, &state),
+            "hdr monitor=2 supported=true user_enabled=true active=false policy_limited=false"
+        );
     }
 }
