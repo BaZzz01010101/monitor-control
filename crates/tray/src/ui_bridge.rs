@@ -42,6 +42,7 @@ impl UiBridge {
         self.window.set_hdr_status(state.hdr_status.clone().into());
         self.window.set_hdr_enabled(state.hdr_enabled);
         self.window.set_hdr_toggle_enabled(state.hdr_toggle_enabled);
+        self.window.set_hdr_pending(state.hdr_pending);
         self.window
             .set_brightness_value(state.brightness.value as i32);
         self.window
@@ -268,6 +269,7 @@ mod tests {
             hdr_status: "Windows HDR: On".into(),
             hdr_enabled: true,
             hdr_toggle_enabled: true,
+            hdr_pending: true,
             brightness: FeatureState {
                 value: 42,
                 maximum: 120,
@@ -302,6 +304,7 @@ mod tests {
         assert_eq!(window.get_hdr_status().to_string(), "Windows HDR: On");
         assert!(window.get_hdr_enabled());
         assert!(window.get_hdr_toggle_enabled());
+        assert!(window.get_hdr_pending());
         assert_eq!(window.get_brightness_value(), 42);
         assert_eq!(window.get_brightness_maximum(), 120);
         assert!(window.get_brightness_enabled());
@@ -324,6 +327,7 @@ mod tests {
         window.invoke_open_settings();
         window.invoke_toggle_autostart();
         window.invoke_toggle_hdr(true);
+        window.invoke_toggle_hdr(false);
         window.invoke_select_input(2);
         window.invoke_brightness_preview(63);
         window.invoke_commit_hdmi_shortcut("Ctrl+Alt+H".into());
@@ -331,6 +335,7 @@ mod tests {
         assert_eq!(rx.recv().unwrap(), UiAction::OpenSettings);
         assert_eq!(rx.recv().unwrap(), UiAction::ToggleAutostart);
         assert_eq!(rx.recv().unwrap(), UiAction::ToggleHdr(true),);
+        assert_eq!(rx.recv().unwrap(), UiAction::ToggleHdr(false),);
         assert_eq!(
             rx.recv().unwrap(),
             UiAction::SetInput(InputRoute::DisplayPort)

@@ -1,4 +1,5 @@
-import { ScrollView, Switch, VerticalBox } from "std-widgets.slint";
+import { ScrollView, VerticalBox } from "std-widgets.slint";
+import { AppSwitch } from "AppSwitch.slint";
 import { ShortcutCaptureField } from "ShortcutCaptureField.slint";
 
 component BackLinkButton inherits Rectangle {
@@ -263,9 +264,12 @@ export component SettingsPane inherits Rectangle {
                                 VerticalLayout {
                                     alignment: center;
 
-                                    Switch {
-                                        checked <=> root.autostart-enabled;
-                                        toggled => {
+                                    AppSwitch {
+                                        checked: root.autostart-enabled;
+                                        enabled: true;
+                                        pending: false;
+                                        accessible-name: "Launch Dell Controller at sign in";
+                                        toggled(requested) => {
                                             root.toggle-autostart();
                                         }
                                     }

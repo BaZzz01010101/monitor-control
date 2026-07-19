@@ -1,0 +1,187 @@
+import { Palette } from "std-widgets.slint";
+
+export component AppSwitch inherits Rectangle {
+    in property <bool> checked: false;
+    in property <bool> enabled: true;
+    in property <bool> pending: false;
+    in property <string> accessible-name: "Switch";
+    callback toggled(bool);
+
+    private property <bool> interactive: root.enabled && !root.pending;
+    private property <bool> pending-origin-checked: false;
+    private property <bool> thumb-checked: root.pending ? root.pending-origin-checked : root.checked;
+    private property <bool> compact-thumb: root.interactive
+        && (touch.pressed || (focus-scope.has-focus && !touch.has-hover));
+    private property <length> pixel-offset-x: round(root.absolute-position.x / 1phx) * 1phx - root.absolute-position.x;
+    private property <length> pixel-offset-y: round(root.absolute-position.y / 1phx) * 1phx - root.absolute-position.y;
+    private property <float> dash-progress: root.pending ? mod(animation-tick(), 900ms) / 900ms : 0;
+    private property <float> straight-share: 20.0 / (40.0 + 16.0 * 3.14159265);
+    private property <float> bottom-end: 0.5 + root.straight-share;
+    private property <angle> arc-angle: root.dash-progress < 0.5
+        ? -90deg + (root.dash-progress - root.straight-share) / (0.5 - root.straight-share) * 180deg
+        : 90deg + (root.dash-progress - root.bottom-end) / (1.0 - root.bottom-end) * 180deg;
+    private property <float> dash-center-x: root.dash-progress < root.straight-share
+        ? 10.0 + root.dash-progress / root.straight-share * 20.0
+        : root.dash-progress < 0.5
+            ? 30.0 + 8.0 * cos(root.arc-angle)
+            : root.dash-progress < root.bottom-end
+                ? 30.0 - (root.dash-progress - 0.5) / root.straight-share * 20.0
+                : 10.0 + 8.0 * cos(root.arc-angle);
+    private property <float> dash-center-y: root.dash-progress < root.straight-share
+        ? 2.0
+        : root.dash-progress < 0.5
+            ? 10.0 + 8.0 * sin(root.arc-angle)
+            : root.dash-progress < root.bottom-end
+                ? 18.0
+                : 10.0 + 8.0 * sin(root.arc-angle);
+    private property <angle> dash-angle: root.dash-progress < root.straight-share
+        ? 0deg
+        : root.dash-progress < 0.5
+            ? root.arc-angle + 90deg
+            : root.dash-progress < root.bottom-end
+                ? 180deg
+                : root.arc-angle + 90deg;
+
+    function request-toggle() {
+        if (root.interactive) {
+            root.toggled(!root.checked);
+        }
+    }
+
+    changed pending => {
+        if (root.pending) {
+            root.pending-origin-checked = root.checked;
+        }
+    }
+
+    width: 40px;
+    height: 20px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    background: transparent;
+    opacity: root.enabled || root.pending ? 1 : 0.55;
+    accessible-enabled: root.interactive;
+    accessible-label: root.accessible-name;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-role: switch;
+    accessible-action-default => {
+        root.request-toggle();
+    }
+    forward-focus: focus-scope;
+
+    drawing-layer := Rectangle {
+        x: root.pixel-offset-x;
+        y: root.pixel-offset-y;
+        width: root.width;
+        height: root.height;
+        background: transparent;
+
+        rail := Rectangle {
+            width: parent.width;
+            height: parent.height;
+            border-radius: self.height / 2;
+            background: root.checked ? Palette.accent-background : Palette.border;
+
+            if !root.checked : Rectangle {
+                x: 1phx;
+                y: 1phx;
+                width: parent.width - 2phx;
+                height: parent.height - 2phx;
+                border-radius: parent.border-radius - 1phx;
+                background: Palette.control-background;
+            }
+
+            Rectangle {
+                width: parent.width;
+                height: parent.height;
+                border-radius: parent.border-radius;
+                background: touch.pressed ? #00000020 : touch.has-hover ? #ffffff18 : transparent;
+            }
+        }
+
+        if root.pending : Path {
+            width: parent.width;
+            height: parent.height;
+            viewbox-width: 40;
+            viewbox-height: 20;
+            fill: transparent;
+            stroke: root.checked ? Palette.accent-foreground : Palette.accent-background;
+            stroke-width: 2px;
+            stroke-line-cap: round;
+
+            MoveTo {
+                x: root.dash-center-x - 3.0 * cos(root.dash-angle);
+                y: root.dash-center-y - 3.0 * sin(root.dash-angle);
+            }
+
+            LineTo {
+                x: root.dash-center-x + 3.0 * cos(root.dash-angle);
+                y: root.dash-center-y + 3.0 * sin(root.dash-angle);
+            }
+        }
+
+        thumb-slot := Rectangle {
+            x: root.pending
+                ? root.pending-origin-checked
+                    ? root.width - self.width - 4px
+                    : 4px
+                : root.checked
+                    ? root.width - 10px - self.width / 2
+                    : 10px - self.width / 2;
+            y: (root.height - self.height) / 2;
+            width: 16px;
+            height: 12px;
+            background: transparent;
+
+            thumb := Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: root.pending ? parent.width : root.compact-thumb ? 10px : 12px;
+                height: root.pending ? parent.height : self.width;
+                border-radius: self.height / 2;
+                background: root.thumb-checked
+                    ? Palette.accent-foreground.with-alpha(root.compact-thumb ? 0.8 : 1)
+                    : Palette.control-foreground.with-alpha(root.compact-thumb ? 0.8 : 0.6);
+
+                animate width, background {
+                    duration: 140ms;
+                    easing: ease-in-out;
+                }
+            }
+
+            animate x {
+                duration: 140ms;
+                easing: ease-in-out;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        width: root.width;
+        height: root.height;
+        enabled: root.interactive;
+        mouse-cursor: root.interactive ? pointer : default;
+        clicked => {
+            focus-scope.focus();
+            root.request-toggle();
+        }
+    }
+
+    focus-scope := FocusScope {
+        x: 0px;
+        y: 0px;
+        width: 0px;
+        height: 0px;
+        enabled: root.interactive;
+
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.request-toggle();
+                return accept;
+            }
+
+            reject
+        }
+    }
+}

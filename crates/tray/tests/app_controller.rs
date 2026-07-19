@@ -121,6 +121,7 @@ fn toggle_autostart_updates_ui_state_immediately() {
         })]
     );
     assert!(controller.ui_state().autostart_enabled);
+    assert!(!controller.ui_state().hdr_pending);
 }
 
 #[test]
@@ -142,6 +143,7 @@ fn hdr_toggle_waits_for_worker_confirmation() {
     );
     assert!(!controller.ui_state().hdr_enabled);
     assert!(!controller.ui_state().hdr_toggle_enabled);
+    assert!(controller.ui_state().hdr_pending);
     assert!(controller
         .handle_action(UiAction::ToggleHdr(true), 1_010)
         .is_empty());
@@ -153,6 +155,7 @@ fn hdr_toggle_waits_for_worker_confirmation() {
 
     assert!(controller.ui_state().hdr_enabled);
     assert!(!controller.ui_state().hdr_toggle_enabled);
+    assert!(controller.ui_state().hdr_pending);
 
     controller.apply_worker_event(
         WorkerEvent::HdrUpdateFinished {
@@ -164,6 +167,7 @@ fn hdr_toggle_waits_for_worker_confirmation() {
 
     assert!(controller.ui_state().hdr_enabled);
     assert!(controller.ui_state().hdr_toggle_enabled);
+    assert!(!controller.ui_state().hdr_pending);
     assert_eq!(controller.ui_state().status_text, "Windows HDR enabled");
 }
 
@@ -175,8 +179,10 @@ fn failed_hdr_toggle_restores_confirmed_state_and_reports_error() {
     snapshot.hdr_available = true;
     controller.apply_worker_event(WorkerEvent::Snapshot(snapshot.clone()), 900);
     controller.handle_action(UiAction::ToggleHdr(true), 1_000);
+    assert!(controller.ui_state().hdr_pending);
 
     controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 1_010);
+    assert!(controller.ui_state().hdr_pending);
     controller.apply_worker_event(
         WorkerEvent::HdrUpdateFinished {
             enabled: true,
@@ -187,6 +193,7 @@ fn failed_hdr_toggle_restores_confirmed_state_and_reports_error() {
 
     assert!(!controller.ui_state().hdr_enabled);
     assert!(controller.ui_state().hdr_toggle_enabled);
+    assert!(!controller.ui_state().hdr_pending);
     assert_eq!(
         controller.ui_state().status_text,
         "HDR update failed: Windows rejected the change"
@@ -201,6 +208,38 @@ fn unavailable_hdr_toggle_is_ignored() {
 
     assert!(effects.is_empty());
     assert!(!controller.ui_state().hdr_enabled);
+    assert!(!controller.ui_state().hdr_pending);
+}
+
+#[test]
+fn disappearing_monitor_keeps_hdr_pending_until_completion_and_unavailable_afterward() {
+    let mut controller = AppController::default();
+    let mut available = sample_snapshot();
+    available.hdr_enabled = false;
+    available.hdr_available = true;
+    controller.apply_worker_event(WorkerEvent::Snapshot(available), 900);
+    controller.handle_action(UiAction::ToggleHdr(true), 1_000);
+
+    let mut disappeared = sample_snapshot();
+    disappeared.has_monitor = false;
+    disappeared.hdr_enabled = false;
+    disappeared.hdr_available = false;
+    disappeared.hdr_status = "Windows HDR: unavailable".into();
+    controller.apply_worker_event(WorkerEvent::Snapshot(disappeared), 1_010);
+
+    assert!(controller.ui_state().hdr_pending);
+    assert!(!controller.ui_state().hdr_toggle_enabled);
+
+    controller.apply_worker_event(
+        WorkerEvent::HdrUpdateFinished {
+            enabled: true,
+            error: Some("HDR update failed: selected monitor disappeared".into()),
+        },
+        1_020,
+    );
+
+    assert!(!controller.ui_state().hdr_pending);
+    assert!(!controller.ui_state().hdr_toggle_enabled);
 }
 
 #[test]

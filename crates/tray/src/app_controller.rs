@@ -207,6 +207,7 @@ pub struct UiState {
     pub hdr_status: String,
     pub hdr_enabled: bool,
     pub hdr_toggle_enabled: bool,
+    pub hdr_pending: bool,
     pub brightness: FeatureState,
     pub contrast: FeatureState,
     pub selected_input: InputRoute,
@@ -230,6 +231,7 @@ impl Default for UiState {
             hdr_status: "Windows HDR: unavailable".into(),
             hdr_enabled: false,
             hdr_toggle_enabled: false,
+            hdr_pending: false,
             brightness: FeatureState::default(),
             contrast: FeatureState::default(),
             selected_input: InputRoute::None,
@@ -268,7 +270,6 @@ pub struct AppController {
     input_last_user_change_ms: Option<u64>,
     durable_selected_monitor_key: String,
     hdr_available: bool,
-    hdr_update_pending: bool,
 }
 
 impl Default for AppController {
@@ -286,7 +287,6 @@ impl Default for AppController {
             input_last_user_change_ms: None,
             durable_selected_monitor_key: String::new(),
             hdr_available: false,
-            hdr_update_pending: false,
         }
     }
 }
@@ -404,7 +404,7 @@ impl AppController {
                 if !self.state.hdr_toggle_enabled || enabled == self.state.hdr_enabled {
                     return Vec::new();
                 }
-                self.hdr_update_pending = true;
+                self.state.hdr_pending = true;
                 self.state.hdr_toggle_enabled = false;
                 vec![ControllerEffect::Worker(WorkerRequest::SetHdr { enabled })]
             }
@@ -455,7 +455,7 @@ impl AppController {
                 }
             }
             WorkerEvent::HdrUpdateFinished { enabled, error } => {
-                self.hdr_update_pending = false;
+                self.state.hdr_pending = false;
                 self.state.hdr_toggle_enabled = self.hdr_available;
                 self.state.status_text = match error {
                     Some(error) => error,
@@ -650,7 +650,7 @@ impl AppController {
         self.state.hdr_status = snapshot.hdr_status;
         self.state.hdr_enabled = snapshot.hdr_enabled;
         self.hdr_available = snapshot.hdr_available;
-        self.state.hdr_toggle_enabled = self.hdr_available && !self.hdr_update_pending;
+        self.state.hdr_toggle_enabled = self.hdr_available && !self.state.hdr_pending;
         self.state.monitor_choices = snapshot.monitor_choices;
         self.state.selected_monitor_key = snapshot.selected_monitor_key;
         if !snapshot.diagnostic_status.is_empty() {

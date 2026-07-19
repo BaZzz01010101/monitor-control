@@ -25,6 +25,7 @@ export component MainWindow inherits Window {
     in property <string> hdr-status: "Windows HDR: unavailable";
     in property <bool> hdr-enabled: false;
     in property <bool> hdr-toggle-enabled: false;
+    in property <bool> hdr-pending: false;
     in-out property <int> brightness-value: 0;
     in property <int> brightness-maximum: 100;
     in property <bool> brightness-enabled: false;
@@ -89,6 +90,7 @@ export component MainWindow inherits Window {
                 hdr-status: root.hdr-status;
                 hdr-enabled: root.hdr-enabled;
                 hdr-toggle-enabled: root.hdr-toggle-enabled;
+                hdr-pending: root.hdr-pending;
                 open-settings => {
                     root.open-settings();
                 }
