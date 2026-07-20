@@ -1,5 +1,6 @@
 import { VerticalBox } from "std-widgets.slint";
 import { HeaderCard } from "HeaderCard.slint";
+import { HdrInfoTooltip } from "HdrInfoTooltip.slint";
 import { PictureCard } from "PictureCard.slint";
 import { InputCard } from "InputCard.slint";
 import { SettingsPane } from "SettingsPane.slint";
@@ -26,6 +27,9 @@ export component MainWindow inherits Window {
     in property <bool> hdr-enabled: false;
     in property <bool> hdr-toggle-enabled: false;
     in property <bool> hdr-pending: false;
+    private property <bool> hdr-info-tooltip-visible: false;
+    private property <length> hdr-info-tooltip-x: 0px;
+    private property <length> hdr-info-tooltip-y: 0px;
     in-out property <int> brightness-value: 0;
     in property <int> brightness-maximum: 100;
     in property <bool> brightness-enabled: false;
@@ -92,10 +96,19 @@ export component MainWindow inherits Window {
                 hdr-toggle-enabled: root.hdr-toggle-enabled;
                 hdr-pending: root.hdr-pending;
                 open-settings => {
+                    root.hdr-info-tooltip-visible = false;
                     root.open-settings();
                 }
                 toggle-hdr(enabled) => {
                     root.toggle-hdr(enabled);
+                }
+                show-hdr-info(x, y) => {
+                    root.hdr-info-tooltip-x = x;
+                    root.hdr-info-tooltip-y = y;
+                    root.hdr-info-tooltip-visible = true;
+                }
+                hide-hdr-info => {
+                    root.hdr-info-tooltip-visible = false;
                 }
             }
 
@@ -218,5 +231,11 @@ export component MainWindow inherits Window {
         normalize-shortcut-key(text) => {
             return root.normalize-shortcut-key(text);
         }
+    }
+
+    if (!root.settings-open && root.hdr-info-tooltip-visible) : HdrInfoTooltip {
+        x: max(8px, min(root.width - self.width - 8px, root.hdr-info-tooltip-x - 12px));
+        y: max(8px, min(root.height - self.height - 8px, root.hdr-info-tooltip-y + 23px));
+        message: "With Windows HDR on, Brightness controls Windows’ SDR content brightness. It does not change HDR content or the monitor backlight. Contrast is managed by HDR and is unavailable.";
     }
 }

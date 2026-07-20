@@ -80,3 +80,18 @@ fn trailing_send_opens_a_new_leading_window() {
     assert_eq!(throttle.schedule(1_141, 52), None);
     assert_eq!(throttle.tick(1_280), Some(52));
 }
+
+#[test]
+fn reset_discards_pending_value_and_opens_a_new_leading_window() {
+    let mut throttle = WriteThrottle::new(140);
+
+    assert_eq!(throttle.schedule(1_000, 50), Some(50));
+    assert_eq!(throttle.schedule(1_040, 51), None);
+    assert!(throttle.has_pending());
+
+    throttle.reset();
+
+    assert!(!throttle.has_pending());
+    assert_eq!(throttle.tick(1_200), None);
+    assert_eq!(throttle.schedule(1_050, 52), Some(52));
+}

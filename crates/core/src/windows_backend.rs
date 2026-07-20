@@ -7,6 +7,30 @@ use crate::{
 };
 use log::debug;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayMonitorHandle(isize);
+
+#[cfg(windows)]
+impl DisplayMonitorHandle {
+    fn from_hmonitor(hmonitor: windows::Win32::Graphics::Gdi::HMONITOR) -> Self {
+        Self(hmonitor.0 as isize)
+    }
+
+    pub fn as_hmonitor(self) -> windows::Win32::Graphics::Gdi::HMONITOR {
+        windows::Win32::Graphics::Gdi::HMONITOR(self.0 as *mut std::ffi::c_void)
+    }
+}
+
+fn map_display_target_and_monitor_handle(
+    source_name: &str,
+    physical_sources: &[String],
+    paths: &[hdr::DisplayPathIdentity],
+    display_monitor: DisplayMonitorHandle,
+) -> Result<(DisplayTargetId, DisplayMonitorHandle), DdcError> {
+    let display_target = hdr::map_display_target(source_name, physical_sources, paths)?;
+    Ok((display_target, display_monitor))
+}
+
 #[cfg(windows)]
 mod imp {
     use std::{mem::size_of, sync::Arc};
@@ -148,6 +172,7 @@ mod imp {
         pub capabilities: Option<Capabilities>,
         pub diagnostics: MonitorDiagnostics,
         pub display_target: Option<DisplayTargetId>,
+        pub display_monitor: Option<DisplayMonitorHandle>,
         pub backend: Arc<WindowsDdcBackend>,
     }
 
@@ -177,6 +202,7 @@ mod imp {
         struct PendingMonitor {
             source_name: Result<String, String>,
             description: String,
+            display_monitor: DisplayMonitorHandle,
             backend: Arc<WindowsDdcBackend>,
         }
 
@@ -206,6 +232,7 @@ mod imp {
 
             let mut pending_monitors = Vec::new();
             for hmonitor in display_monitors {
+                let display_monitor = DisplayMonitorHandle::from_hmonitor(hmonitor);
                 let source_name = display_source_name(hmonitor).map_err(|error| error.to_string());
                 let mut count = 0;
                 GetNumberOfPhysicalMonitorsFromHMONITOR(hmonitor, &mut count)
@@ -226,6 +253,7 @@ mod imp {
                     pending_monitors.push(PendingMonitor {
                         source_name: source_name.clone(),
                         description,
+                        display_monitor,
                         backend,
                     });
                 }
@@ -249,21 +277,26 @@ mod imp {
                 let PendingMonitor {
                     source_name,
                     description,
+                    display_monitor,
                     backend,
                 } = pending;
                 let display_mapping = match (&source_name, &active_display_paths) {
-                    (Ok(source_name), Ok(paths)) => {
-                        hdr::map_display_target(source_name, &physical_sources, paths)
-                            .map_err(|error| error.to_string())
-                    }
+                    (Ok(source_name), Ok(paths)) => map_display_target_and_monitor_handle(
+                        source_name,
+                        &physical_sources,
+                        paths,
+                        display_monitor,
+                    )
+                    .map_err(|error| error.to_string()),
                     (Err(error), _) => Err(error.clone()),
                     (_, Err(error)) => Err(error.to_string()),
                 };
-                let (display_target, display_mapping_error) = match display_mapping {
-                    Ok(target) => (Some(target), None),
+                let (display_target, display_monitor, display_mapping_error) = match display_mapping
+                {
+                    Ok((target, handle)) => (Some(target), Some(handle), None),
                     Err(error) => {
                         debug!("HDR display mapping unavailable for {description}: {error}");
-                        (None, Some(error))
+                        (None, None, Some(error))
                     }
                 };
                 let capabilities_result = backend.capabilities_string();
@@ -295,6 +328,7 @@ mod imp {
                         display_mapping_error,
                     },
                     display_target,
+                    display_monitor,
                     backend,
                 });
             }
@@ -362,6 +396,7 @@ mod imp {
         pub capabilities: Option<Capabilities>,
         pub diagnostics: MonitorDiagnostics,
         pub display_target: Option<DisplayTargetId>,
+        pub display_monitor: Option<DisplayMonitorHandle>,
         pub backend: Arc<WindowsDdcBackend>,
     }
 
@@ -381,3 +416,55 @@ mod imp {
 }
 
 pub use imp::{enumerate_monitors, MonitorDiagnostics, WindowsDdcBackend, WindowsMonitor};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hdr::DisplayPathIdentity;
+
+    fn path(source_name: &str, monitor_device_path: &str) -> DisplayPathIdentity {
+        DisplayPathIdentity {
+            source_name: source_name.into(),
+            monitor_device_path: monitor_device_path.into(),
+        }
+    }
+
+    #[test]
+    fn unique_display_mapping_retains_the_enumerated_monitor_handle() {
+        let handle = DisplayMonitorHandle(0x1234);
+        let physical_sources = vec![r"\\.\DISPLAY1".to_string()];
+        let paths = vec![path(r"\\.\DISPLAY1", "MONITOR#DELA227")];
+
+        let (target, retained_handle) = map_display_target_and_monitor_handle(
+            r"\\.\DISPLAY1",
+            &physical_sources,
+            &paths,
+            handle,
+        )
+        .unwrap();
+
+        assert_eq!(target.monitor_device_path(), "MONITOR#DELA227");
+        assert_eq!(retained_handle, handle);
+    }
+
+    #[test]
+    fn failed_display_mapping_does_not_produce_a_monitor_handle() {
+        let handle = DisplayMonitorHandle(0x1234);
+        let physical_sources = vec![r"\\.\DISPLAY1".to_string()];
+        let paths = vec![
+            path(r"\\.\DISPLAY1", "MONITOR#DELA227"),
+            path(r"\\.\DISPLAY1", "MONITOR#ACME0001"),
+        ];
+
+        let error = map_display_target_and_monitor_handle(
+            r"\\.\DISPLAY1",
+            &physical_sources,
+            &paths,
+            handle,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("multiple Windows targets"));
+    }
+}

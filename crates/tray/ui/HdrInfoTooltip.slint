@@ -1,0 +1,74 @@
+import { Palette } from "std-widgets.slint";
+
+export component HdrInfoIcon inherits Rectangle {
+    callback show-tooltip(length, length);
+    callback hide-tooltip();
+
+    width: 16px;
+    height: 16px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: self.width / 2;
+    border-width: 1px;
+    border-color: Palette.control-foreground.with-alpha(0.68);
+    background: touch.has-hover ? Palette.control-foreground.with-alpha(0.08) : transparent;
+
+    Text {
+        text: "i";
+        color: Palette.control-foreground;
+        font-size: 11px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+
+        changed has-hover => {
+            if (self.has-hover) {
+                hover-delay.start();
+            } else {
+                hover-delay.stop();
+                root.hide-tooltip();
+            }
+        }
+    }
+
+    hover-delay := Timer {
+        interval: 350ms;
+        running: false;
+        triggered => {
+            if (touch.has-hover) {
+                root.show-tooltip(root.absolute-position.x, root.absolute-position.y);
+            }
+        }
+    }
+}
+
+export component HdrInfoTooltip inherits Rectangle {
+    in property <string> message;
+
+    width: 350px;
+    height: 92px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Palette.border;
+    background: Palette.background;
+    drop-shadow-blur: 8px;
+    drop-shadow-color: #00000030;
+    drop-shadow-offset-y: 3px;
+
+    Text {
+        x: 12px;
+        y: 10px;
+        width: parent.width - 24px;
+        height: parent.height - 20px;
+        text: root.message;
+        color: Palette.foreground;
+        font-size: 13px;
+        wrap: word-wrap;
+        vertical-alignment: center;
+    }
+}

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
+parking_lot.workspace = true
 env_logger = "0.11"
 dell-controller-core = { path = "../core" }
 global-hotkey = { git = "https://github.com/BaZzz01010101/global-hotkey.git", rev = "1605413" }
@@ -16,7 +17,8 @@ serde.workspace = true
 slint = { version = "1.16.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
 toml.workspace = true
 tray-icon = "0.23.1"
-windows = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { workspace = true, features = ["Foundation", "Graphics_Display", "System", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "0.62"
 
 [build-dependencies]
 slint-build = "1.16.1"

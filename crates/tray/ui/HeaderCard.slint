@@ -1,5 +1,6 @@
 import { HorizontalBox, VerticalBox } from "std-widgets.slint";
 import { AppSwitch } from "AppSwitch.slint";
+import { HdrInfoIcon } from "HdrInfoTooltip.slint";
 
 component IconActionButton inherits Rectangle {
     in property <string> accessible-name;
@@ -63,6 +64,8 @@ export component HeaderCard inherits Rectangle {
     in property <bool> hdr-pending;
     callback open-settings;
     callback toggle-hdr(bool);
+    callback show-hdr-info(length, length);
+    callback hide-hdr-info();
 
     border-radius: 10px;
     border-width: 1px;
@@ -123,11 +126,26 @@ export component HeaderCard inherits Rectangle {
                 padding: 0px;
                 alignment: start;
 
-                Text {
-                    text: root.hdr-status;
-                    font-size: 13px;
-                    color: #1f1f1f;
-                    vertical-alignment: center;
+                HorizontalBox {
+                    spacing: 5px;
+                    padding: 0px;
+                    alignment: center;
+
+                    HdrInfoIcon {
+                        show-tooltip(x, y) => {
+                            root.show-hdr-info(x, y);
+                        }
+                        hide-tooltip => {
+                            root.hide-hdr-info();
+                        }
+                    }
+
+                    Text {
+                        text: root.hdr-status;
+                        font-size: 13px;
+                        color: #1f1f1f;
+                        vertical-alignment: center;
+                    }
                 }
 
                 AppSwitch {

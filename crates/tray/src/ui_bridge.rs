@@ -309,6 +309,7 @@ mod tests {
         assert_eq!(window.get_brightness_maximum(), 120);
         assert!(window.get_brightness_enabled());
         assert_eq!(window.get_contrast_value(), 77);
+        assert!(window.get_contrast_enabled());
         assert_eq!(window.get_selected_input(), 1);
         assert!(window.get_input_enabled());
         assert!(window.get_autostart_enabled());
@@ -330,6 +331,9 @@ mod tests {
         window.invoke_toggle_hdr(false);
         window.invoke_select_input(2);
         window.invoke_brightness_preview(63);
+        window.invoke_brightness_commit(64);
+        window.invoke_contrast_preview(75);
+        window.invoke_contrast_commit(74);
         window.invoke_commit_hdmi_shortcut("Ctrl+Alt+H".into());
 
         assert_eq!(rx.recv().unwrap(), UiAction::OpenSettings);
@@ -345,6 +349,27 @@ mod tests {
             UiAction::PreviewFeature {
                 feature: FeatureId::Brightness,
                 value: 63,
+            }
+        );
+        assert_eq!(
+            rx.recv().unwrap(),
+            UiAction::CommitFeature {
+                feature: FeatureId::Brightness,
+                value: 64,
+            }
+        );
+        assert_eq!(
+            rx.recv().unwrap(),
+            UiAction::PreviewFeature {
+                feature: FeatureId::Contrast,
+                value: 75,
+            }
+        );
+        assert_eq!(
+            rx.recv().unwrap(),
+            UiAction::CommitFeature {
+                feature: FeatureId::Contrast,
+                value: 74,
             }
         );
         assert_eq!(

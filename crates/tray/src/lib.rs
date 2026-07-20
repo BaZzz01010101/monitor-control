@@ -1,3 +1,4 @@
+pub mod advanced_color_watcher;
 pub mod app_controller;
 pub mod debug_ui;
 pub mod hotkeys;

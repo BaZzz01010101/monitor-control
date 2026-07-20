@@ -10,6 +10,12 @@ pub struct HdrState {
     pub limited_by_policy: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdrContentBrightness {
+    pub percent: u32,
+    pub raw_white_level: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DisplayTargetId {
     monitor_device_path: String,
@@ -186,6 +192,15 @@ fn hdr_state_from_raw(flags: u32, active_color_mode: i32) -> HdrState {
     }
 }
 
+fn sdr_white_level_from_percent(percent: u32) -> u32 {
+    1_000 + percent.clamp(0, 100) * 50
+}
+
+fn sdr_percent_from_white_level(raw_white_level: u32) -> u32 {
+    let offset = raw_white_level.saturating_sub(1_000);
+    (offset / 50 + u32::from(offset % 50 >= 25)).min(100)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DisplayRoute {
     adapter_id_low: u32,
@@ -209,6 +224,12 @@ trait DisplayConfigApi {
     fn active_paths(&mut self) -> Result<Vec<ActiveDisplayPath>, DdcError>;
     fn hdr_state(&mut self, route: DisplayRoute) -> Result<RawHdrState, DdcError>;
     fn set_hdr_enabled(&mut self, route: DisplayRoute, enabled: bool) -> Result<(), DdcError>;
+    fn sdr_white_level(&mut self, route: DisplayRoute) -> Result<u32, DdcError>;
+    fn set_sdr_white_level(
+        &mut self,
+        route: DisplayRoute,
+        raw_white_level: u32,
+    ) -> Result<(), DdcError>;
 }
 
 fn resolve_active_path(
@@ -271,6 +292,41 @@ fn set_hdr_enabled_with_api(
     Ok(confirmed)
 }
 
+fn sdr_content_brightness_with_api(
+    api: &mut impl DisplayConfigApi,
+    target: &DisplayTargetId,
+) -> Result<SdrContentBrightness, DdcError> {
+    let paths = api.active_paths()?;
+    let route = resolve_active_path(target, &paths)?;
+    let raw_white_level = api.sdr_white_level(route)?;
+    Ok(SdrContentBrightness {
+        percent: sdr_percent_from_white_level(raw_white_level),
+        raw_white_level,
+    })
+}
+
+fn set_sdr_content_brightness_with_api(
+    api: &mut impl DisplayConfigApi,
+    target: &DisplayTargetId,
+    percent: u32,
+) -> Result<SdrContentBrightness, DdcError> {
+    let requested_percent = percent.clamp(0, 100);
+    let requested_raw_white_level = sdr_white_level_from_percent(requested_percent);
+    let paths = api.active_paths()?;
+    let route = resolve_active_path(target, &paths)?;
+    api.set_sdr_white_level(route, requested_raw_white_level)?;
+
+    let confirmed = sdr_content_brightness_with_api(api, target)?;
+    if confirmed.percent != requested_percent
+        || confirmed.raw_white_level != requested_raw_white_level
+    {
+        return Err(DdcError::Permanent(format!(
+            "Windows did not confirm SDR content brightness {requested_percent}%"
+        )));
+    }
+    Ok(confirmed)
+}
+
 #[cfg(windows)]
 mod windows_api {
     use std::mem::size_of;
@@ -278,9 +334,10 @@ mod windows_api {
     use windows::Win32::{
         Devices::Display::{
             DisplayConfigGetDeviceInfo, DisplayConfigSetDeviceInfo, GetDisplayConfigBufferSizes,
-            QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-            DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
-            DISPLAYCONFIG_DEVICE_INFO_TYPE, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO,
+            QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+            DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+            DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_DEVICE_INFO_TYPE,
+            DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
             DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME,
             QDC_ONLY_ACTIVE_PATHS,
         },
@@ -294,6 +351,8 @@ mod windows_api {
         DISPLAYCONFIG_DEVICE_INFO_TYPE(15);
     const DISPLAYCONFIG_DEVICE_INFO_SET_HDR_STATE: DISPLAYCONFIG_DEVICE_INFO_TYPE =
         DISPLAYCONFIG_DEVICE_INFO_TYPE(16);
+    const DISPLAYCONFIG_DEVICE_INFO_SET_SDR_WHITE_LEVEL: DISPLAYCONFIG_DEVICE_INFO_TYPE =
+        DISPLAYCONFIG_DEVICE_INFO_TYPE(0xFFFF_FFEEu32 as i32);
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -310,6 +369,15 @@ mod windows_api {
     pub(super) struct DisplayConfigSetHdrState {
         pub header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
         pub flags: u32,
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    #[derive(Clone, Copy)]
+    pub(super) struct DisplayConfigSetSdrWhiteLevel {
+        pub header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+        pub SDRWhiteLevel: u32,
+        pub finalValue: u8,
     }
 
     pub(super) struct SystemDisplayConfigApi;
@@ -361,6 +429,40 @@ mod windows_api {
                 if result != 0 {
                     return Err(DdcError::Permanent(format!(
                         "DisplayConfigSetDeviceInfo(SET_HDR_STATE) failed: {result}"
+                    )));
+                }
+                Ok(())
+            }
+        }
+
+        fn sdr_white_level(&mut self, route: DisplayRoute) -> Result<u32, DdcError> {
+            unsafe {
+                let mut packet = sdr_white_level_get_packet(route);
+                let result = DisplayConfigGetDeviceInfo(
+                    &mut packet.header as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER,
+                );
+                if result != 0 {
+                    return Err(DdcError::Permanent(format!(
+                        "DisplayConfigGetDeviceInfo(GET_SDR_WHITE_LEVEL) failed: {result}"
+                    )));
+                }
+                Ok(packet.SDRWhiteLevel)
+            }
+        }
+
+        fn set_sdr_white_level(
+            &mut self,
+            route: DisplayRoute,
+            raw_white_level: u32,
+        ) -> Result<(), DdcError> {
+            unsafe {
+                let packet = sdr_white_level_packet(route, raw_white_level);
+                let result = DisplayConfigSetDeviceInfo(
+                    &packet.header as *const DISPLAYCONFIG_DEVICE_INFO_HEADER,
+                );
+                if result != 0 {
+                    return Err(DdcError::Permanent(format!(
+                        "DisplayConfigSetDeviceInfo(SET_SDR_WHITE_LEVEL) failed: {result}"
                     )));
                 }
                 Ok(())
@@ -422,6 +524,32 @@ mod windows_api {
                 route,
             ),
             flags: u32::from(enabled),
+        }
+    }
+
+    pub(super) fn sdr_white_level_get_packet(route: DisplayRoute) -> DISPLAYCONFIG_SDR_WHITE_LEVEL {
+        DISPLAYCONFIG_SDR_WHITE_LEVEL {
+            header: header(
+                DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>(),
+                route,
+            ),
+            SDRWhiteLevel: 0,
+        }
+    }
+
+    pub(super) fn sdr_white_level_packet(
+        route: DisplayRoute,
+        raw_white_level: u32,
+    ) -> DisplayConfigSetSdrWhiteLevel {
+        DisplayConfigSetSdrWhiteLevel {
+            header: header(
+                DISPLAYCONFIG_DEVICE_INFO_SET_SDR_WHITE_LEVEL,
+                size_of::<DisplayConfigSetSdrWhiteLevel>(),
+                route,
+            ),
+            SDRWhiteLevel: raw_white_level,
+            finalValue: 1,
         }
     }
 
@@ -516,8 +644,8 @@ mod windows_api {
 use windows_api::SystemDisplayConfigApi;
 #[cfg(all(windows, test))]
 use windows_api::{
-    advanced_color_info_packet, hdr_state_packet, DisplayConfigGetAdvancedColorInfo2,
-    DisplayConfigSetHdrState,
+    advanced_color_info_packet, hdr_state_packet, sdr_white_level_packet,
+    DisplayConfigGetAdvancedColorInfo2, DisplayConfigSetHdrState, DisplayConfigSetSdrWhiteLevel,
 };
 
 #[cfg(windows)]
@@ -554,6 +682,43 @@ pub fn set_hdr_enabled(target: &DisplayTargetId, enabled: bool) -> Result<HdrSta
 pub fn set_hdr_enabled(_target: &DisplayTargetId, _enabled: bool) -> Result<HdrState, DdcError> {
     Err(DdcError::Permanent(
         "Windows HDR control is only available on Windows".into(),
+    ))
+}
+
+#[cfg(windows)]
+pub fn sdr_content_brightness(target: &DisplayTargetId) -> Result<SdrContentBrightness, DdcError> {
+    sdr_content_brightness_with_api(&mut SystemDisplayConfigApi, target)
+}
+
+#[cfg(not(windows))]
+pub fn sdr_content_brightness(_target: &DisplayTargetId) -> Result<SdrContentBrightness, DdcError> {
+    Err(DdcError::Permanent(
+        "Windows SDR content brightness control is only available on Windows".into(),
+    ))
+}
+
+#[cfg(windows)]
+pub fn set_sdr_content_brightness(
+    target: &DisplayTargetId,
+    percent: u32,
+) -> Result<SdrContentBrightness, DdcError> {
+    let confirmed =
+        set_sdr_content_brightness_with_api(&mut SystemDisplayConfigApi, target, percent)?;
+    info!(
+        "set SDR content brightness target {} to {}%",
+        target.monitor_device_path(),
+        confirmed.percent
+    );
+    Ok(confirmed)
+}
+
+#[cfg(not(windows))]
+pub fn set_sdr_content_brightness(
+    _target: &DisplayTargetId,
+    _percent: u32,
+) -> Result<SdrContentBrightness, DdcError> {
+    Err(DdcError::Permanent(
+        "Windows SDR content brightness control is only available on Windows".into(),
     ))
 }
 
@@ -731,6 +896,23 @@ mod tests {
         assert!(state.limited_by_policy);
     }
 
+    #[test]
+    fn sdr_white_level_conversion_clamps_and_rounds_to_windows_percentages() {
+        assert_eq!(sdr_white_level_from_percent(0), 1_000);
+        assert_eq!(sdr_white_level_from_percent(50), 3_500);
+        assert_eq!(sdr_white_level_from_percent(100), 6_000);
+        assert_eq!(sdr_white_level_from_percent(u32::MAX), 6_000);
+
+        assert_eq!(sdr_percent_from_white_level(999), 0);
+        assert_eq!(sdr_percent_from_white_level(1_000), 0);
+        assert_eq!(sdr_percent_from_white_level(3_500), 50);
+        assert_eq!(sdr_percent_from_white_level(6_000), 100);
+        assert_eq!(sdr_percent_from_white_level(6_001), 100);
+        assert_eq!(sdr_percent_from_white_level(1_024), 0);
+        assert_eq!(sdr_percent_from_white_level(1_025), 1);
+        assert_eq!(sdr_percent_from_white_level(u32::MAX), 100);
+    }
+
     fn active_path(target_id: u32) -> ActiveDisplayPath {
         ActiveDisplayPath {
             identity: topology_path(r"\\.\DISPLAY1", "MONITOR#DELA227"),
@@ -779,6 +961,18 @@ mod tests {
         fn set_hdr_enabled(&mut self, route: DisplayRoute, enabled: bool) -> Result<(), DdcError> {
             self.writes.push((route, enabled));
             Ok(())
+        }
+
+        fn sdr_white_level(&mut self, _route: DisplayRoute) -> Result<u32, DdcError> {
+            Err(DdcError::Permanent("unexpected SDR read".into()))
+        }
+
+        fn set_sdr_white_level(
+            &mut self,
+            _route: DisplayRoute,
+            _raw_white_level: u32,
+        ) -> Result<(), DdcError> {
+            Err(DdcError::Permanent("unexpected SDR write".into()))
         }
     }
 
@@ -874,6 +1068,206 @@ mod tests {
         assert!(error.contains("did not confirm HDR enabled"));
     }
 
+    struct FakeSdrDisplayConfigApi {
+        topologies: VecDeque<Vec<ActiveDisplayPath>>,
+        raw_white_levels: VecDeque<u32>,
+        read_routes: Vec<DisplayRoute>,
+        writes: Vec<(DisplayRoute, u32)>,
+    }
+
+    impl FakeSdrDisplayConfigApi {
+        fn new(topologies: Vec<Vec<ActiveDisplayPath>>, raw_white_levels: Vec<u32>) -> Self {
+            Self {
+                topologies: topologies.into(),
+                raw_white_levels: raw_white_levels.into(),
+                read_routes: Vec::new(),
+                writes: Vec::new(),
+            }
+        }
+    }
+
+    impl DisplayConfigApi for FakeSdrDisplayConfigApi {
+        fn active_paths(&mut self) -> Result<Vec<ActiveDisplayPath>, DdcError> {
+            if self.topologies.len() > 1 {
+                Ok(self.topologies.pop_front().unwrap())
+            } else {
+                Ok(self.topologies.front().cloned().unwrap_or_default())
+            }
+        }
+
+        fn hdr_state(&mut self, _route: DisplayRoute) -> Result<RawHdrState, DdcError> {
+            Err(DdcError::Permanent("unexpected HDR read".into()))
+        }
+
+        fn set_hdr_enabled(
+            &mut self,
+            _route: DisplayRoute,
+            _enabled: bool,
+        ) -> Result<(), DdcError> {
+            Err(DdcError::Permanent("unexpected HDR write".into()))
+        }
+
+        fn sdr_white_level(&mut self, route: DisplayRoute) -> Result<u32, DdcError> {
+            self.read_routes.push(route);
+            self.raw_white_levels
+                .pop_front()
+                .ok_or_else(|| DdcError::Permanent("missing fake SDR white level".into()))
+        }
+
+        fn set_sdr_white_level(
+            &mut self,
+            route: DisplayRoute,
+            raw_white_level: u32,
+        ) -> Result<(), DdcError> {
+            self.writes.push((route, raw_white_level));
+            Ok(())
+        }
+    }
+
+    fn active_path_for(
+        target_id: u32,
+        source_name: &str,
+        monitor_device_path: &str,
+    ) -> ActiveDisplayPath {
+        ActiveDisplayPath {
+            identity: topology_path(source_name, monitor_device_path),
+            route: DisplayRoute {
+                adapter_id_low: 7,
+                adapter_id_high: 0,
+                target_id,
+            },
+        }
+    }
+
+    #[test]
+    fn sdr_getter_resolves_the_selected_target_after_topology_reordering() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let expected_path = active_path(9);
+        let mut api = FakeSdrDisplayConfigApi::new(
+            vec![vec![
+                active_path_for(3, r"\\.\DISPLAY2", "MONITOR#ACME0001"),
+                expected_path.clone(),
+            ]],
+            vec![3_500],
+        );
+
+        let brightness = sdr_content_brightness_with_api(&mut api, &target).unwrap();
+
+        assert_eq!(
+            brightness,
+            SdrContentBrightness {
+                percent: 50,
+                raw_white_level: 3_500,
+            }
+        );
+        assert_eq!(api.read_routes, vec![expected_path.route]);
+    }
+
+    #[test]
+    fn sdr_write_re_resolves_the_target_and_confirms_readback() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let mut api = FakeSdrDisplayConfigApi::new(
+            vec![vec![active_path(3)], vec![active_path(9)]],
+            vec![6_000],
+        );
+
+        let confirmed = set_sdr_content_brightness_with_api(&mut api, &target, u32::MAX).unwrap();
+
+        assert_eq!(
+            confirmed,
+            SdrContentBrightness {
+                percent: 100,
+                raw_white_level: 6_000,
+            }
+        );
+        assert_eq!(api.writes, vec![(active_path(3).route, 6_000)]);
+        assert_eq!(api.read_routes, vec![active_path(9).route]);
+    }
+
+    #[test]
+    fn sdr_write_rejects_a_missing_target_without_writing() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let mut api = FakeSdrDisplayConfigApi::new(vec![vec![]], vec![]);
+
+        let error = set_sdr_content_brightness_with_api(&mut api, &target, 50)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("is not active"));
+        assert!(api.writes.is_empty());
+    }
+
+    #[test]
+    fn sdr_write_rejects_a_stale_target_without_writing() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let mut api = FakeSdrDisplayConfigApi::new(
+            vec![vec![active_path_for(
+                3,
+                r"\\.\DISPLAY2",
+                "MONITOR#ACME0001",
+            )]],
+            vec![],
+        );
+
+        let error = set_sdr_content_brightness_with_api(&mut api, &target, 50)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("is not active"));
+        assert!(api.writes.is_empty());
+    }
+
+    #[test]
+    fn sdr_write_rejects_a_duplicate_target_without_writing() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let mut api = FakeSdrDisplayConfigApi::new(
+            vec![vec![
+                active_path(3),
+                active_path_for(9, r"\\.\DISPLAY2", "monitor#dela227"),
+            ]],
+            vec![],
+        );
+
+        let error = set_sdr_content_brightness_with_api(&mut api, &target, 50)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("is not unique"));
+        assert!(api.writes.is_empty());
+    }
+
+    #[test]
+    fn sdr_write_fails_when_windows_does_not_confirm_the_requested_percentage() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let mut api = FakeSdrDisplayConfigApi::new(
+            vec![vec![active_path(3)], vec![active_path(9)]],
+            vec![5_949],
+        );
+
+        let error = set_sdr_content_brightness_with_api(&mut api, &target, 100)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("did not confirm SDR content brightness 100%"));
+        assert_eq!(api.writes, vec![(active_path(3).route, 6_000)]);
+    }
+
+    #[test]
+    fn sdr_write_rejects_a_raw_readback_mismatch_with_the_same_percentage() {
+        let target = DisplayTargetId::new("MONITOR#DELA227");
+        let mut api = FakeSdrDisplayConfigApi::new(
+            vec![vec![active_path(3)], vec![active_path(9)]],
+            vec![3_501],
+        );
+
+        let error = set_sdr_content_brightness_with_api(&mut api, &target, 50)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("did not confirm SDR content brightness 50%"));
+        assert_eq!(api.writes, vec![(active_path(3).route, 3_500)]);
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_11_hdr_packets_use_hdr_specific_request_types() {
@@ -890,5 +1284,19 @@ mod tests {
         assert_eq!(set.flags, 1);
         assert_eq!(size_of::<DisplayConfigGetAdvancedColorInfo2>(), 36);
         assert_eq!(size_of::<DisplayConfigSetHdrState>(), 24);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_11_sdr_set_packet_uses_the_private_request_and_final_value() {
+        use std::mem::size_of;
+
+        let set = sdr_white_level_packet(active_path(3).route, 3_500);
+
+        assert_eq!(set.header.r#type.0, 0xFFFF_FFEEu32 as i32);
+        assert_eq!(set.header.size as usize, size_of_val(&set));
+        assert_eq!(set.SDRWhiteLevel, 3_500);
+        assert_eq!(set.finalValue, 1);
+        assert_eq!(size_of::<DisplayConfigSetSdrWhiteLevel>(), 28);
     }
 }

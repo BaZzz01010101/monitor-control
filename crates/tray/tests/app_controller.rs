@@ -1,7 +1,7 @@
 use dell_controller_tray::app_controller::{
     AppController, ControllerEffect, FeatureId, FeatureSnapshot, InputRoute, MonitorChoice,
-    MonitorSnapshot, ShortcutTarget, UiAction, UiPane, WorkerEvent, WorkerRequest, BRIGHTNESS_CODE,
-    CONTRAST_CODE, INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
+    MonitorSnapshot, PictureBackend, ShortcutTarget, UiAction, UiPane, WorkerEvent, WorkerRequest,
+    BRIGHTNESS_CODE, CONTRAST_CODE, INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
 };
 use dell_controller_tray::persistence::PersistedSettings;
 
@@ -31,6 +31,9 @@ fn sample_snapshot() -> MonitorSnapshot {
         has_monitor: true,
         hdr_enabled: true,
         hdr_available: true,
+        hdr_active: false,
+        picture_backend: PictureBackend::Ddc,
+        advanced_color_monitor: None,
     }
 }
 
@@ -137,13 +140,19 @@ fn hdr_toggle_waits_for_worker_confirmation() {
 
     assert_eq!(
         effects,
-        vec![ControllerEffect::Worker(WorkerRequest::SetHdr {
-            enabled: true,
-        })]
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SetHdr {
+                enabled: true,
+                use_cached_ddc_values: false,
+            }),
+        ]
     );
     assert!(!controller.ui_state().hdr_enabled);
     assert!(!controller.ui_state().hdr_toggle_enabled);
     assert!(controller.ui_state().hdr_pending);
+    assert!(!controller.ui_state().brightness.enabled);
+    assert!(!controller.ui_state().contrast.enabled);
     assert!(controller
         .handle_action(UiAction::ToggleHdr(true), 1_010)
         .is_empty());
@@ -161,6 +170,7 @@ fn hdr_toggle_waits_for_worker_confirmation() {
         WorkerEvent::HdrUpdateFinished {
             enabled: true,
             error: None,
+            used_cached_ddc_values: false,
         },
         1_030,
     );
@@ -187,6 +197,7 @@ fn failed_hdr_toggle_restores_confirmed_state_and_reports_error() {
         WorkerEvent::HdrUpdateFinished {
             enabled: true,
             error: Some("HDR update failed: Windows rejected the change".into()),
+            used_cached_ddc_values: false,
         },
         1_020,
     );
@@ -234,6 +245,7 @@ fn disappearing_monitor_keeps_hdr_pending_until_completion_and_unavailable_after
         WorkerEvent::HdrUpdateFinished {
             enabled: true,
             error: Some("HDR update failed: selected monitor disappeared".into()),
+            used_cached_ddc_values: false,
         },
         1_020,
     );
@@ -273,9 +285,12 @@ fn selecting_a_monitor_updates_durable_state_and_worker_selection() {
 
     assert_eq!(
         effects,
-        vec![ControllerEffect::Worker(WorkerRequest::SelectMonitor {
-            key: "dell-u4025qw|u4025qw|1".into(),
-        })]
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SelectMonitor {
+                key: "dell-u4025qw|u4025qw|1".into(),
+            }),
+        ]
     );
     assert_eq!(
         controller.persisted_settings().selected_monitor_key,
@@ -419,6 +434,410 @@ fn preview_feature_uses_leading_and_trailing_writes() {
             code: BRIGHTNESS_CODE,
             value: 53,
         })]
+    );
+}
+
+#[test]
+fn hdr_active_brightness_uses_windows_sdr_backend_and_contrast_is_disabled() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_active = true;
+    snapshot.picture_backend = PictureBackend::WindowsSdr;
+    snapshot.brightness.value = 40;
+    snapshot.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 900);
+
+    assert!(controller.ui_state().brightness.enabled);
+    assert!(!controller.ui_state().contrast.enabled);
+    assert_eq!(
+        controller.handle_action(
+            UiAction::PreviewFeature {
+                feature: FeatureId::Brightness,
+                value: 55,
+            },
+            1_000,
+        ),
+        vec![ControllerEffect::Worker(
+            WorkerRequest::SetSdrContentBrightness { percent: 55 }
+        )]
+    );
+    assert!(controller
+        .handle_action(
+            UiAction::PreviewFeature {
+                feature: FeatureId::Contrast,
+                value: 70,
+            },
+            1_010,
+        )
+        .is_empty());
+}
+
+#[test]
+fn hdr_active_snapshot_preserves_cached_ddc_contrast() {
+    let mut controller = AppController::default();
+    controller.apply_worker_event(WorkerEvent::Snapshot(sample_snapshot()), 900);
+
+    let mut hdr = sample_snapshot();
+    hdr.hdr_active = true;
+    hdr.picture_backend = PictureBackend::WindowsSdr;
+    hdr.brightness.value = 35;
+    hdr.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(hdr), 1_000);
+
+    let state = controller.ui_state();
+    assert_eq!(state.brightness.value, 35);
+    assert!(state.brightness.enabled);
+    assert_eq!(state.contrast.value, 80);
+    assert_eq!(state.contrast.text, "80");
+    assert!(!state.contrast.enabled);
+}
+
+#[test]
+fn disabling_hdr_requests_cached_restore_only_for_a_complete_selected_monitor_cache() {
+    let mut cached = AppController::default();
+    cached.apply_worker_event(WorkerEvent::Snapshot(sample_snapshot()), 900);
+    let mut hdr = sample_snapshot();
+    hdr.hdr_active = true;
+    hdr.picture_backend = PictureBackend::WindowsSdr;
+    hdr.brightness.value = 35;
+    hdr.contrast.available = false;
+    cached.apply_worker_event(WorkerEvent::Snapshot(hdr.clone()), 950);
+
+    assert_eq!(
+        cached.handle_action(UiAction::ToggleHdr(false), 1_000),
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SetHdr {
+                enabled: false,
+                use_cached_ddc_values: true,
+            }),
+        ]
+    );
+
+    let mut cold = AppController::default();
+    cold.apply_worker_event(WorkerEvent::Snapshot(hdr), 900);
+
+    assert_eq!(
+        cold.handle_action(UiAction::ToggleHdr(false), 1_000),
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SetHdr {
+                enabled: false,
+                use_cached_ddc_values: false,
+            }),
+        ]
+    );
+}
+
+fn complete_cached_hdr_off_transition(controller: &mut AppController) {
+    controller.apply_worker_event(WorkerEvent::Snapshot(sample_snapshot()), 900);
+
+    let mut hdr = sample_snapshot();
+    hdr.hdr_active = true;
+    hdr.picture_backend = PictureBackend::WindowsSdr;
+    hdr.brightness.value = 35;
+    hdr.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(hdr), 950);
+    controller.handle_action(UiAction::ToggleHdr(false), 1_000);
+
+    let mut deferred = sample_snapshot();
+    deferred.hdr_enabled = false;
+    deferred.hdr_active = false;
+    deferred.picture_backend = PictureBackend::Ddc;
+    deferred.brightness.available = false;
+    deferred.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(deferred), 1_010);
+    controller.apply_worker_event(
+        WorkerEvent::HdrUpdateFinished {
+            enabled: false,
+            error: None,
+            used_cached_ddc_values: true,
+        },
+        1_020,
+    );
+}
+
+#[test]
+fn cached_hdr_off_completion_enables_ddc_controls_before_background_reconciliation() {
+    let mut controller = AppController::default();
+    complete_cached_hdr_off_transition(&mut controller);
+
+    let state = controller.ui_state();
+    assert!(!state.hdr_pending);
+    assert_eq!(state.brightness.value, 50);
+    assert_eq!(state.brightness.text, "50");
+    assert!(state.brightness.enabled);
+    assert_eq!(state.contrast.value, 80);
+    assert_eq!(state.contrast.text, "80");
+    assert!(state.contrast.enabled);
+}
+
+#[test]
+fn background_reconciliation_updates_untouched_cached_values() {
+    let mut controller = AppController::default();
+    complete_cached_hdr_off_transition(&mut controller);
+
+    let mut refreshed = sample_snapshot();
+    refreshed.hdr_enabled = false;
+    refreshed.brightness.value = 57;
+    refreshed.contrast.value = 77;
+    controller.apply_worker_event(WorkerEvent::Snapshot(refreshed), 2_000);
+
+    let state = controller.ui_state();
+    assert_eq!(state.brightness.value, 57);
+    assert_eq!(state.contrast.value, 77);
+    assert!(state.brightness.enabled);
+    assert!(state.contrast.enabled);
+}
+
+#[test]
+fn user_edit_wins_over_the_in_flight_restore_snapshot() {
+    let mut controller = AppController::default();
+    complete_cached_hdr_off_transition(&mut controller);
+
+    assert_eq!(
+        controller.handle_action(
+            UiAction::PreviewFeature {
+                feature: FeatureId::Brightness,
+                value: 63,
+            },
+            1_030,
+        ),
+        vec![ControllerEffect::Worker(WorkerRequest::WriteFeature {
+            code: BRIGHTNESS_CODE,
+            value: 63,
+        })]
+    );
+
+    let mut stale = sample_snapshot();
+    stale.hdr_enabled = false;
+    stale.brightness.value = 45;
+    stale.contrast.value = 75;
+    controller.apply_worker_event(WorkerEvent::Snapshot(stale), 5_000);
+
+    let state = controller.ui_state();
+    assert_eq!(state.brightness.value, 63);
+    assert_eq!(state.contrast.value, 75);
+}
+
+#[test]
+fn ddc_picture_cache_is_scoped_by_monitor_key() {
+    let mut controller = AppController::default();
+    controller.apply_worker_event(WorkerEvent::Snapshot(sample_snapshot()), 900);
+    controller.handle_action(UiAction::SelectMonitor("second-monitor".into()), 950);
+
+    let mut second_hdr = sample_snapshot();
+    second_hdr.selected_monitor_key = "second-monitor".into();
+    second_hdr.monitor_choices.push(MonitorChoice {
+        key: "second-monitor".into(),
+        title: "Second monitor".into(),
+    });
+    second_hdr.hdr_active = true;
+    second_hdr.picture_backend = PictureBackend::WindowsSdr;
+    second_hdr.brightness.value = 42;
+    second_hdr.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(second_hdr), 1_000);
+
+    let state = controller.ui_state();
+    assert_eq!(state.contrast.text, "n/a");
+    assert!(!state.contrast.enabled);
+    assert_eq!(
+        controller.handle_action(UiAction::ToggleHdr(false), 1_100),
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SetHdr {
+                enabled: false,
+                use_cached_ddc_values: false,
+            }),
+        ]
+    );
+}
+
+#[test]
+fn hdr_transition_cancels_a_trailing_picture_write() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_enabled = false;
+    snapshot.hdr_available = true;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 900);
+
+    controller.handle_action(
+        UiAction::PreviewFeature {
+            feature: FeatureId::Brightness,
+            value: 51,
+        },
+        1_000,
+    );
+    controller.handle_action(
+        UiAction::PreviewFeature {
+            feature: FeatureId::Brightness,
+            value: 52,
+        },
+        1_040,
+    );
+    assert!(controller.ui_state().brightness.enabled);
+
+    let effects = controller.handle_action(UiAction::ToggleHdr(true), 1_050);
+
+    assert_eq!(
+        effects,
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SetHdr {
+                enabled: true,
+                use_cached_ddc_values: false,
+            }),
+        ]
+    );
+    assert!(controller.flush_pending(1_140).is_empty());
+}
+
+#[test]
+fn windows_sdr_failure_restores_the_confirmed_snapshot_value() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_active = true;
+    snapshot.picture_backend = PictureBackend::WindowsSdr;
+    snapshot.brightness.value = 40;
+    snapshot.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot.clone()), 900);
+
+    controller.handle_action(
+        UiAction::CommitFeature {
+            feature: FeatureId::Brightness,
+            value: 65,
+        },
+        1_000,
+    );
+    assert_eq!(controller.ui_state().brightness.value, 65);
+
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 1_010);
+    assert_eq!(controller.ui_state().brightness.value, 65);
+    controller.apply_worker_event(
+        WorkerEvent::SdrContentBrightnessFinished {
+            requested_percent: 65,
+            error: Some("SDR brightness update failed".into()),
+        },
+        1_020,
+    );
+
+    assert_eq!(controller.ui_state().brightness.value, 40);
+    assert_eq!(controller.ui_state().brightness.text, "40");
+    assert_eq!(
+        controller.ui_state().status_text,
+        "SDR brightness update failed"
+    );
+}
+
+#[test]
+fn older_windows_sdr_completion_does_not_discard_a_newer_throttled_value() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_active = true;
+    snapshot.picture_backend = PictureBackend::WindowsSdr;
+    snapshot.brightness.value = 40;
+    snapshot.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot.clone()), 900);
+
+    assert_eq!(
+        controller.handle_action(
+            UiAction::PreviewFeature {
+                feature: FeatureId::Brightness,
+                value: 50,
+            },
+            1_000,
+        ),
+        vec![ControllerEffect::Worker(
+            WorkerRequest::SetSdrContentBrightness { percent: 50 }
+        )]
+    );
+    assert!(controller
+        .handle_action(
+            UiAction::PreviewFeature {
+                feature: FeatureId::Brightness,
+                value: 60,
+            },
+            1_040,
+        )
+        .is_empty());
+
+    snapshot.brightness.value = 50;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 1_050);
+    controller.apply_worker_event(
+        WorkerEvent::SdrContentBrightnessFinished {
+            requested_percent: 50,
+            error: None,
+        },
+        1_060,
+    );
+
+    assert_eq!(controller.ui_state().brightness.value, 60);
+    assert_eq!(
+        controller.flush_pending(1_140),
+        vec![ControllerEffect::Worker(
+            WorkerRequest::SetSdrContentBrightness { percent: 60 }
+        )]
+    );
+}
+
+#[test]
+fn external_windows_sdr_snapshot_updates_brightness_without_a_pending_write() {
+    let mut controller = AppController::default();
+    let mut snapshot = sample_snapshot();
+    snapshot.hdr_active = true;
+    snapshot.picture_backend = PictureBackend::WindowsSdr;
+    snapshot.brightness.value = 40;
+    snapshot.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot.clone()), 900);
+
+    snapshot.brightness.value = 72;
+    controller.apply_worker_event(WorkerEvent::Snapshot(snapshot), 1_000);
+
+    assert_eq!(controller.ui_state().brightness.value, 72);
+    assert_eq!(controller.ui_state().brightness.text, "72");
+}
+
+#[test]
+fn external_hdr_mode_transition_cancels_picture_writes_and_restores_fresh_ddc_values() {
+    let mut controller = AppController::default();
+    let mut hdr = sample_snapshot();
+    hdr.hdr_active = true;
+    hdr.picture_backend = PictureBackend::WindowsSdr;
+    hdr.brightness.value = 35;
+    hdr.contrast.available = false;
+    controller.apply_worker_event(WorkerEvent::Snapshot(hdr), 900);
+
+    controller.handle_action(
+        UiAction::PreviewFeature {
+            feature: FeatureId::Brightness,
+            value: 45,
+        },
+        1_000,
+    );
+    controller.handle_action(
+        UiAction::PreviewFeature {
+            feature: FeatureId::Brightness,
+            value: 46,
+        },
+        1_040,
+    );
+
+    let mut sdr = sample_snapshot();
+    sdr.hdr_enabled = false;
+    sdr.hdr_active = false;
+    sdr.picture_backend = PictureBackend::Ddc;
+    sdr.brightness.value = 58;
+    sdr.contrast.value = 77;
+    controller.apply_worker_event(WorkerEvent::Snapshot(sdr), 1_050);
+
+    let state = controller.ui_state();
+    assert_eq!(state.brightness.value, 58);
+    assert!(state.brightness.enabled);
+    assert_eq!(state.contrast.value, 77);
+    assert!(state.contrast.enabled);
+    assert_eq!(
+        controller.flush_pending(1_140),
+        vec![ControllerEffect::Worker(WorkerRequest::CancelPictureWrites)]
     );
 }
 

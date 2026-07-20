@@ -12,8 +12,9 @@ use dell_controller_core::{
 
 use crate::{
     app_controller::{
-        FeatureSnapshot, InputRoute, MonitorChoice, MonitorSnapshot, WorkerEvent, WorkerRequest,
-        BRIGHTNESS_CODE, CONTRAST_CODE, INPUT_DP_VALUE, INPUT_HDMI_VALUE, INPUT_USB_C_VALUE,
+        FeatureSnapshot, InputRoute, MonitorChoice, MonitorSnapshot, PictureBackend, WorkerEvent,
+        WorkerRequest, BRIGHTNESS_CODE, CONTRAST_CODE, INPUT_DP_VALUE, INPUT_HDMI_VALUE,
+        INPUT_USB_C_VALUE,
     },
     monitor_text::{compact_input_label, monitor_heading},
 };
@@ -77,11 +78,22 @@ struct DeviceSnapshot {
     snapshot: MonitorSnapshot,
     selected_monitor_missing: bool,
     ddc_failure: bool,
+    picture_values_deferred: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PictureReadMode {
+    Full,
+    DeferDdc,
 }
 
 trait WorkerDevice {
     fn refresh_monitors(&mut self) -> Result<(), String>;
-    fn snapshot(&mut self, selected_monitor_key: Option<&str>) -> DeviceSnapshot;
+    fn snapshot(
+        &mut self,
+        selected_monitor_key: Option<&str>,
+        picture_read_mode: PictureReadMode,
+    ) -> DeviceSnapshot;
     fn write_vcp(
         &mut self,
         selected_monitor_key: Option<&str>,
@@ -92,6 +104,11 @@ trait WorkerDevice {
         &mut self,
         selected_monitor_key: Option<&str>,
         enabled: bool,
+    ) -> Result<(), String>;
+    fn set_sdr_content_brightness(
+        &mut self,
+        selected_monitor_key: Option<&str>,
+        percent: u32,
     ) -> Result<(), String>;
     fn autostart_enabled(&self) -> bool;
     fn set_autostart_enabled(&mut self, enabled: bool) -> Result<(), String>;
@@ -116,8 +133,12 @@ impl WorkerDevice for WindowsWorkerDevice {
         }
     }
 
-    fn snapshot(&mut self, selected_monitor_key: Option<&str>) -> DeviceSnapshot {
-        build_snapshot(&self.monitors, selected_monitor_key)
+    fn snapshot(
+        &mut self,
+        selected_monitor_key: Option<&str>,
+        picture_read_mode: PictureReadMode,
+    ) -> DeviceSnapshot {
+        build_snapshot(&self.monitors, selected_monitor_key, picture_read_mode)
     }
 
     fn write_vcp(
@@ -135,6 +156,14 @@ impl WorkerDevice for WindowsWorkerDevice {
         enabled: bool,
     ) -> Result<(), String> {
         set_hdr_for_monitor(&self.monitors, selected_monitor_key, enabled)
+    }
+
+    fn set_sdr_content_brightness(
+        &mut self,
+        selected_monitor_key: Option<&str>,
+        percent: u32,
+    ) -> Result<(), String> {
+        set_sdr_content_brightness_for_monitor(&self.monitors, selected_monitor_key, percent)
     }
 
     fn autostart_enabled(&self) -> bool {
@@ -160,6 +189,10 @@ enum WorkerTask {
     },
     SetHdr {
         enabled: bool,
+        use_cached_ddc_values: bool,
+    },
+    SetSdrContentBrightness {
+        percent: u32,
     },
     WriteVcp {
         code: u8,
@@ -175,9 +208,11 @@ struct PendingWorkerRequests {
 
 impl From<Vec<WorkerRequest>> for PendingWorkerRequests {
     fn from(requests: Vec<WorkerRequest>) -> Self {
-        Self {
-            requests: requests.into(),
+        let mut pending = Self::default();
+        for request in requests {
+            pending.push(request);
         }
+        pending
     }
 }
 
@@ -187,6 +222,10 @@ impl PendingWorkerRequests {
     }
 
     fn push(&mut self, request: WorkerRequest) {
+        if matches!(request, WorkerRequest::CancelPictureWrites) {
+            self.requests.retain(|queued| !is_picture_write(queued));
+            return;
+        }
         self.requests.push_back(request);
     }
 
@@ -210,7 +249,17 @@ impl PendingWorkerRequests {
             WorkerRequest::SetAutostart { enabled, quiet } => {
                 Some(WorkerTask::SetAutostart { enabled, quiet })
             }
-            WorkerRequest::SetHdr { enabled } => Some(WorkerTask::SetHdr { enabled }),
+            WorkerRequest::SetHdr {
+                enabled,
+                use_cached_ddc_values,
+            } => Some(WorkerTask::SetHdr {
+                enabled,
+                use_cached_ddc_values,
+            }),
+            WorkerRequest::SetSdrContentBrightness { percent } => {
+                Some(self.coalesce_sdr_brightness(percent))
+            }
+            WorkerRequest::CancelPictureWrites => self.pop_next_task(),
             WorkerRequest::WriteFeature { code, value } => {
                 Some(self.coalesce_write(code, value, false))
             }
@@ -240,6 +289,31 @@ impl PendingWorkerRequests {
             input_status: latest_input_status,
         }
     }
+
+    fn coalesce_sdr_brightness(&mut self, percent: u32) -> WorkerTask {
+        let mut latest_percent = percent;
+        self.requests.retain(|request| {
+            if let WorkerRequest::SetSdrContentBrightness { percent } = request {
+                latest_percent = *percent;
+                false
+            } else {
+                true
+            }
+        });
+        WorkerTask::SetSdrContentBrightness {
+            percent: latest_percent,
+        }
+    }
+}
+
+fn is_picture_write(request: &WorkerRequest) -> bool {
+    matches!(
+        request,
+        WorkerRequest::WriteFeature {
+            code: BRIGHTNESS_CODE | CONTRAST_CODE,
+            ..
+        } | WorkerRequest::SetSdrContentBrightness { .. }
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -325,13 +399,40 @@ fn execute_worker_task<D: WorkerDevice>(
                 }
             }
         }
-        WorkerTask::SetHdr { enabled } => {
+        WorkerTask::SetHdr {
+            enabled,
+            use_cached_ddc_values,
+        } => {
             let error = device
                 .set_hdr_enabled(runtime.selected_monitor_key.as_deref(), enabled)
                 .err()
                 .map(|error| format!("HDR update failed: {error}"));
+            let may_defer_ddc = error.is_none() && !enabled && use_cached_ddc_values;
+            let used_cached_ddc_values = if may_defer_ddc {
+                emit_device_snapshot_with_mode(device, event_tx, runtime, PictureReadMode::DeferDdc)
+            } else {
+                emit_device_snapshot(device, event_tx, runtime);
+                false
+            };
+            let _ = event_tx.send(WorkerEvent::HdrUpdateFinished {
+                enabled,
+                error,
+                used_cached_ddc_values,
+            });
+            if used_cached_ddc_values {
+                emit_device_snapshot(device, event_tx, runtime);
+            }
+        }
+        WorkerTask::SetSdrContentBrightness { percent } => {
+            let error = device
+                .set_sdr_content_brightness(runtime.selected_monitor_key.as_deref(), percent)
+                .err()
+                .map(|error| format!("SDR content brightness update failed: {error}"));
             emit_device_snapshot(device, event_tx, runtime);
-            let _ = event_tx.send(WorkerEvent::HdrUpdateFinished { enabled, error });
+            let _ = event_tx.send(WorkerEvent::SdrContentBrightnessFinished {
+                requested_percent: percent,
+                error,
+            });
         }
         WorkerTask::WriteVcp {
             code,
@@ -357,14 +458,24 @@ fn emit_device_snapshot<D: WorkerDevice>(
     event_tx: &Sender<WorkerEvent>,
     runtime: &mut WorkerRuntimeState,
 ) {
-    let result = device.snapshot(runtime.selected_monitor_key.as_deref());
+    emit_device_snapshot_with_mode(device, event_tx, runtime, PictureReadMode::Full);
+}
+
+fn emit_device_snapshot_with_mode<D: WorkerDevice>(
+    device: &mut D,
+    event_tx: &Sender<WorkerEvent>,
+    runtime: &mut WorkerRuntimeState,
+    picture_read_mode: PictureReadMode,
+) -> bool {
+    let result = device.snapshot(runtime.selected_monitor_key.as_deref(), picture_read_mode);
     let selected_monitor_missing = result.selected_monitor_missing;
     let ddc_failure = result.ddc_failure;
+    let picture_values_deferred = result.picture_values_deferred;
     let _ = event_tx.send(WorkerEvent::Snapshot(result.snapshot));
 
     if selected_monitor_missing {
         let _ = event_tx.send(WorkerEvent::Status(
-            "Selected monitor is unavailable; using the first detected monitor".into(),
+            "Selected monitor is unavailable".into(),
         ));
     }
 
@@ -377,7 +488,10 @@ fn emit_device_snapshot<D: WorkerDevice>(
                     let _ = event_tx.send(WorkerEvent::Status(
                         "Monitor topology refreshed after repeated DDC failures".into(),
                     ));
-                    let refreshed = device.snapshot(runtime.selected_monitor_key.as_deref());
+                    let refreshed = device.snapshot(
+                        runtime.selected_monitor_key.as_deref(),
+                        PictureReadMode::Full,
+                    );
                     let _ = event_tx.send(WorkerEvent::Snapshot(refreshed.snapshot));
                 }
                 Err(error) => {
@@ -390,6 +504,8 @@ fn emit_device_snapshot<D: WorkerDevice>(
     } else {
         runtime.consecutive_ddc_failures = 0;
     }
+
+    picture_values_deferred
 }
 
 fn write_feature(
@@ -399,19 +515,45 @@ fn write_feature(
     value: u32,
 ) -> Result<(), String> {
     let choices = monitor_choices(monitors);
-    let Some((index, _choice, _missing)) =
-        selected_monitor(monitors, &choices, selected_monitor_key)
-    else {
-        return Err("No monitor available".into());
-    };
+    let index = strict_selected_monitor_index(&choices, selected_monitor_key)?;
     let Some(monitor) = monitors.get(index) else {
         return Err("Selected monitor is unavailable".into());
     };
+
+    if matches!(code, BRIGHTNESS_CODE | CONTRAST_CODE) {
+        let target = monitor.display_target.as_ref().ok_or_else(|| {
+            monitor
+                .diagnostics
+                .display_mapping_error
+                .as_ref()
+                .map(|error| format!("Windows display mapping is unavailable: {error}"))
+                .unwrap_or_else(|| "Windows display mapping is unavailable".into())
+        })?;
+        let state = hdr::hdr_state(target).map_err(|error| {
+            format!("Windows HDR state is unavailable; DDC picture write canceled: {error}")
+        })?;
+        validate_ddc_picture_write(code, Some(&state))?;
+    }
 
     let queue: CommandQueue<_> = CommandQueue::new(monitor.backend.clone(), RetryPolicy::default());
     queue
         .set(VcpCode::new(code), value)
         .map_err(|error| format!("Set failed: {error}"))
+}
+
+fn validate_ddc_picture_write(code: u8, hdr_state: Option<&hdr::HdrState>) -> Result<(), String> {
+    if !matches!(code, BRIGHTNESS_CODE | CONTRAST_CODE) {
+        return Ok(());
+    }
+
+    let state = hdr_state.ok_or_else(|| {
+        "Windows HDR state is unavailable; DDC picture write canceled".to_string()
+    })?;
+    if state.active {
+        Err("Windows HDR is active; DDC picture write canceled".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn set_hdr_for_monitor(
@@ -438,6 +580,34 @@ fn set_hdr_for_monitor(
         .map_err(|error| error.to_string())
 }
 
+fn set_sdr_content_brightness_for_monitor(
+    monitors: &[WindowsMonitor],
+    selected_monitor_key: Option<&str>,
+    percent: u32,
+) -> Result<(), String> {
+    let choices = monitor_choices(monitors);
+    let index = strict_selected_monitor_index(&choices, selected_monitor_key)?;
+    let monitor = monitors
+        .get(index)
+        .ok_or_else(|| "Selected monitor is unavailable".to_string())?;
+    let target = monitor.display_target.as_ref().ok_or_else(|| {
+        monitor
+            .diagnostics
+            .display_mapping_error
+            .as_ref()
+            .map(|error| format!("Windows display mapping is unavailable: {error}"))
+            .unwrap_or_else(|| "Windows display mapping is unavailable".into())
+    })?;
+    let state = hdr::hdr_state(target).map_err(|error| error.to_string())?;
+    if !state.active {
+        return Err("Windows HDR is no longer active".into());
+    }
+
+    hdr::set_sdr_content_brightness(target, percent)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn strict_selected_monitor_index(
     choices: &[MonitorChoice],
     selected_monitor_key: Option<&str>,
@@ -455,53 +625,62 @@ fn strict_selected_monitor_index(
 fn build_snapshot(
     monitors: &[WindowsMonitor],
     selected_monitor_key: Option<&str>,
+    picture_read_mode: PictureReadMode,
 ) -> DeviceSnapshot {
     let choices = monitor_choices(monitors);
-    let Some((index, choice, selected_monitor_missing)) =
-        selected_monitor(monitors, &choices, selected_monitor_key)
-    else {
-        return DeviceSnapshot {
-            snapshot: MonitorSnapshot {
-                monitor_title: "No DDC/CI monitor detected".into(),
-                input_summary: "Input".into(),
-                hdr_status: "Windows HDR: unavailable".into(),
-                hdr_enabled: false,
-                hdr_available: false,
-                diagnostic_status: String::new(),
-                monitor_choices: choices,
-                selected_monitor_key: String::new(),
-                brightness: FeatureSnapshot {
-                    value: 0,
-                    maximum: 100,
-                    available: false,
-                },
-                contrast: FeatureSnapshot {
-                    value: 0,
-                    maximum: 100,
-                    available: false,
-                },
-                selected_input: InputRoute::None,
-                input_enabled: false,
-                has_monitor: false,
-            },
-            selected_monitor_missing: false,
-            ddc_failure: false,
-        };
+    let requested_key = selected_monitor_key
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned);
+    let index = match strict_selected_monitor_index(&choices, selected_monitor_key) {
+        Ok(index) => index,
+        Err(_) if requested_key.is_some() => {
+            return unavailable_device_snapshot(
+                choices,
+                requested_key.unwrap_or_default(),
+                "Selected monitor is unavailable",
+                diagnostic_status(monitors),
+                true,
+            );
+        }
+        Err(_) => {
+            return unavailable_device_snapshot(
+                choices,
+                String::new(),
+                "No DDC/CI monitor detected",
+                String::new(),
+                false,
+            );
+        }
     };
+    let choice = &choices[index];
     let monitor = &monitors[index];
 
+    let hdr = hdr_info(monitor);
     let queue: CommandQueue<_> = CommandQueue::new(monitor.backend.clone(), RetryPolicy::default());
-    let brightness = read_feature(&queue, BRIGHTNESS_CODE);
-    let contrast = read_feature(&queue, CONTRAST_CODE);
+    let (brightness, contrast, picture_backend) = read_picture_features(
+        hdr.state.as_ref(),
+        picture_read_mode,
+        || read_sdr_content_brightness(monitor),
+        |code| read_feature(&queue, code),
+    );
+    let picture_values_deferred = picture_read_mode == PictureReadMode::DeferDdc
+        && hdr.state.as_ref().is_some_and(|state| !state.active);
     let input = read_input(monitor, &queue);
     let capability_supports_input = monitor
         .capabilities
         .as_ref()
         .is_some_and(|capabilities| capabilities.supports_vcp(INPUT_CODE));
     let input_enabled = input.available || capability_supports_input;
-    let ddc_failure = !brightness.available && !contrast.available && !input.available;
+    let ddc_failure = match picture_backend {
+        PictureBackend::Ddc if picture_values_deferred => {
+            capability_supports_input && !input.available
+        }
+        PictureBackend::Ddc => !brightness.available && !contrast.available && !input.available,
+        PictureBackend::WindowsSdr | PictureBackend::Unavailable => {
+            capability_supports_input && !input.available
+        }
+    };
     let selected_monitor_key = choice.key.clone();
-    let (hdr_text, hdr_enabled_val, hdr_available_val) = hdr_info(monitor);
 
     DeviceSnapshot {
         snapshot: MonitorSnapshot {
@@ -510,9 +689,12 @@ fn build_snapshot(
                 monitor.info.model.as_deref(),
             ),
             input_summary: input.summary,
-            hdr_status: hdr_text,
-            hdr_enabled: hdr_enabled_val,
-            hdr_available: hdr_available_val,
+            hdr_status: hdr.status,
+            hdr_enabled: hdr.enabled,
+            hdr_available: hdr.available,
+            hdr_active: hdr.state.as_ref().is_some_and(|state| state.active),
+            picture_backend,
+            advanced_color_monitor: monitor.display_monitor,
             diagnostic_status: diagnostic_status(monitors),
             monitor_choices: choices,
             selected_monitor_key,
@@ -522,8 +704,108 @@ fn build_snapshot(
             input_enabled,
             has_monitor: true,
         },
-        selected_monitor_missing,
+        selected_monitor_missing: false,
         ddc_failure,
+        picture_values_deferred,
+    }
+}
+
+fn unavailable_device_snapshot(
+    choices: Vec<MonitorChoice>,
+    selected_monitor_key: String,
+    monitor_title: &str,
+    diagnostic_status: String,
+    selected_monitor_missing: bool,
+) -> DeviceSnapshot {
+    DeviceSnapshot {
+        snapshot: MonitorSnapshot {
+            monitor_title: monitor_title.into(),
+            input_summary: "Input".into(),
+            hdr_status: "Windows HDR: unavailable".into(),
+            hdr_enabled: false,
+            hdr_available: false,
+            hdr_active: false,
+            picture_backend: PictureBackend::Unavailable,
+            advanced_color_monitor: None,
+            diagnostic_status,
+            monitor_choices: choices,
+            selected_monitor_key,
+            brightness: unavailable_feature(),
+            contrast: unavailable_feature(),
+            selected_input: InputRoute::None,
+            input_enabled: false,
+            has_monitor: false,
+        },
+        selected_monitor_missing,
+        ddc_failure: false,
+        picture_values_deferred: false,
+    }
+}
+
+fn unavailable_feature() -> FeatureSnapshot {
+    FeatureSnapshot {
+        value: 0,
+        maximum: 100,
+        available: false,
+    }
+}
+
+fn read_picture_features(
+    hdr_state: Option<&hdr::HdrState>,
+    picture_read_mode: PictureReadMode,
+    read_sdr: impl FnOnce() -> FeatureSnapshot,
+    mut read_ddc: impl FnMut(u8) -> FeatureSnapshot,
+) -> (FeatureSnapshot, FeatureSnapshot, PictureBackend) {
+    let Some(hdr_state) = hdr_state else {
+        return (
+            unavailable_feature(),
+            unavailable_feature(),
+            PictureBackend::Unavailable,
+        );
+    };
+
+    if hdr_state.active {
+        let brightness = read_sdr();
+        let backend = if brightness.available {
+            PictureBackend::WindowsSdr
+        } else {
+            PictureBackend::Unavailable
+        };
+        return (brightness, unavailable_feature(), backend);
+    }
+
+    if picture_read_mode == PictureReadMode::DeferDdc {
+        return (
+            unavailable_feature(),
+            unavailable_feature(),
+            PictureBackend::Ddc,
+        );
+    }
+
+    (
+        read_ddc(BRIGHTNESS_CODE),
+        read_ddc(CONTRAST_CODE),
+        PictureBackend::Ddc,
+    )
+}
+
+fn read_sdr_content_brightness(monitor: &WindowsMonitor) -> FeatureSnapshot {
+    let Some(target) = monitor.display_target.as_ref() else {
+        return unavailable_feature();
+    };
+    match hdr::sdr_content_brightness(target) {
+        Ok(brightness) => FeatureSnapshot {
+            value: brightness.percent,
+            maximum: 100,
+            available: true,
+        },
+        Err(error) => {
+            debug!(
+                "SDR content brightness unavailable for {}: {error}",
+                monitor.info.description
+            );
+            unavailable_feature()
+        }
     }
 }
 
@@ -603,25 +885,6 @@ fn monitor_choices(monitors: &[WindowsMonitor]) -> Vec<MonitorChoice> {
     choices
 }
 
-fn selected_monitor<'a>(
-    monitors: &[WindowsMonitor],
-    choices: &'a [MonitorChoice],
-    selected_monitor_key: Option<&str>,
-) -> Option<(usize, &'a MonitorChoice, bool)> {
-    if monitors.is_empty() || choices.is_empty() {
-        return None;
-    }
-
-    if let Some(key) = selected_monitor_key.filter(|key| !key.is_empty()) {
-        if let Some(index) = choices.iter().position(|choice| choice.key == key) {
-            return Some((index, &choices[index], false));
-        }
-        return Some((0, &choices[0], true));
-    }
-
-    Some((0, &choices[0], false))
-}
-
 fn monitor_key(monitor: &WindowsMonitor, duplicate_ordinal: usize) -> String {
     format!(
         "{}|{}|{}",
@@ -666,7 +929,7 @@ fn diagnostic_status(monitors: &[WindowsMonitor]) -> String {
                     .diagnostics
                     .display_mapping_error
                     .as_ref()
-                    .map(|error| format!("{title}: HDR mapping unavailable ({error})")),
+                    .map(|error| format!("{title}: display mapping unavailable ({error})")),
             ]
         })
         .flatten()
@@ -688,23 +951,44 @@ fn input_route_from_value(value: u32) -> InputRoute {
     }
 }
 
-fn hdr_info(monitor: &WindowsMonitor) -> (String, bool, bool) {
+struct HdrInfo {
+    status: String,
+    enabled: bool,
+    available: bool,
+    state: Option<hdr::HdrState>,
+}
+
+fn hdr_info(monitor: &WindowsMonitor) -> HdrInfo {
     let Some(target) = monitor.display_target.as_ref() else {
-        return ("Windows HDR: unavailable".into(), false, false);
+        return HdrInfo {
+            status: "Windows HDR: unavailable".into(),
+            enabled: false,
+            available: false,
+            state: None,
+        };
     };
     match hdr::hdr_state(target) {
         Ok(state) => {
-            let text = hdr_status_text(&state);
             let enabled = state.user_enabled;
             let available = state.supported && !state.limited_by_policy;
-            (text, enabled, available)
+            HdrInfo {
+                status: hdr_status_text(&state),
+                enabled,
+                available,
+                state: Some(state),
+            }
         }
         Err(error) => {
             debug!(
                 "HDR state unavailable for {}: {error}",
                 monitor.info.description
             );
-            ("Windows HDR: unavailable".into(), false, false)
+            HdrInfo {
+                status: "Windows HDR: unavailable".into(),
+                enabled: false,
+                available: false,
+                state: None,
+            }
         }
     }
 }
@@ -726,7 +1010,7 @@ fn hdr_status_text(state: &hdr::HdrState) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{cell::RefCell, sync::mpsc};
 
     use super::*;
 
@@ -736,6 +1020,7 @@ mod tests {
         ddc_failure_snapshots: bool,
         missing_selected_monitor: bool,
         hdr_error: Option<String>,
+        sdr_brightness_error: Option<String>,
     }
 
     impl WorkerDevice for RecordingWorkerDevice {
@@ -744,10 +1029,18 @@ mod tests {
             Ok(())
         }
 
-        fn snapshot(&mut self, selected_monitor_key: Option<&str>) -> DeviceSnapshot {
+        fn snapshot(
+            &mut self,
+            selected_monitor_key: Option<&str>,
+            picture_read_mode: PictureReadMode,
+        ) -> DeviceSnapshot {
+            let suffix = match picture_read_mode {
+                PictureReadMode::Full => "",
+                PictureReadMode::DeferDdc => ":defer-ddc",
+            };
             self.calls.push(format!(
-                "snapshot:{}",
-                selected_monitor_key.unwrap_or("<none>")
+                "snapshot:{}{suffix}",
+                selected_monitor_key.unwrap_or("<none>"),
             ));
             DeviceSnapshot {
                 snapshot: test_snapshot(
@@ -757,6 +1050,7 @@ mod tests {
                 ),
                 selected_monitor_missing: self.missing_selected_monitor,
                 ddc_failure: self.ddc_failure_snapshots,
+                picture_values_deferred: picture_read_mode == PictureReadMode::DeferDdc,
             }
         }
 
@@ -783,6 +1077,21 @@ mod tests {
                 selected_monitor_key.unwrap_or("<none>")
             ));
             match self.hdr_error.take() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+
+        fn set_sdr_content_brightness(
+            &mut self,
+            selected_monitor_key: Option<&str>,
+            percent: u32,
+        ) -> Result<(), String> {
+            self.calls.push(format!(
+                "sdr-brightness:{}:{percent}",
+                selected_monitor_key.unwrap_or("<none>")
+            ));
+            match self.sdr_brightness_error.take() {
                 Some(error) => Err(error),
                 None => Ok(()),
             }
@@ -824,6 +1133,9 @@ mod tests {
             has_monitor: true,
             hdr_enabled: true,
             hdr_available: true,
+            hdr_active: true,
+            picture_backend: PictureBackend::WindowsSdr,
+            advanced_color_monitor: None,
         }
     }
 
@@ -924,13 +1236,211 @@ mod tests {
     }
 
     #[test]
-    fn hdr_requests_are_dispatched_as_worker_tasks() {
-        let mut pending =
-            PendingWorkerRequests::from(vec![WorkerRequest::SetHdr { enabled: true }]);
+    fn queued_windows_brightness_writes_coalesce_to_the_latest_percentage() {
+        let mut pending = PendingWorkerRequests::from(vec![
+            WorkerRequest::SetSdrContentBrightness { percent: 42 },
+            WorkerRequest::SetSdrContentBrightness { percent: 73 },
+        ]);
 
         assert_eq!(
             pending.pop_next_task(),
-            Some(WorkerTask::SetHdr { enabled: true })
+            Some(WorkerTask::SetSdrContentBrightness { percent: 73 })
+        );
+        assert_eq!(pending.pop_next_task(), None);
+    }
+
+    #[test]
+    fn cancelling_picture_writes_preserves_input_writes() {
+        let mut pending = PendingWorkerRequests::from(vec![
+            WorkerRequest::WriteFeature {
+                code: BRIGHTNESS_CODE,
+                value: 63,
+            },
+            WorkerRequest::SetSdrContentBrightness { percent: 48 },
+            WorkerRequest::SetInput {
+                value: INPUT_HDMI_VALUE,
+            },
+            WorkerRequest::CancelPictureWrites,
+        ]);
+
+        assert_eq!(
+            pending.pop_next_task(),
+            Some(WorkerTask::WriteVcp {
+                code: INPUT_CODE,
+                value: INPUT_HDMI_VALUE,
+                input_status: true,
+            })
+        );
+        assert_eq!(pending.pop_next_task(), None);
+    }
+
+    #[test]
+    fn active_hdr_picture_reads_only_windows_sdr_brightness() {
+        let state = hdr_state(true, true, true, false);
+        let calls = RefCell::new(Vec::new());
+
+        let (brightness, contrast, backend) = read_picture_features(
+            Some(&state),
+            PictureReadMode::Full,
+            || {
+                calls.borrow_mut().push("windows-sdr");
+                FeatureSnapshot {
+                    value: 58,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+            |code| {
+                calls.borrow_mut().push(if code == BRIGHTNESS_CODE {
+                    "ddc-brightness"
+                } else {
+                    "ddc-contrast"
+                });
+                FeatureSnapshot {
+                    value: 0,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+        );
+
+        assert_eq!(*calls.borrow(), vec!["windows-sdr"]);
+        assert_eq!(brightness.value, 58);
+        assert_eq!(brightness.maximum, 100);
+        assert!(!contrast.available);
+        assert_eq!(backend, PictureBackend::WindowsSdr);
+    }
+
+    #[test]
+    fn deferred_inactive_hdr_snapshot_skips_ddc_picture_reads() {
+        let state = hdr_state(true, false, false, false);
+        let calls = RefCell::new(Vec::new());
+
+        let (brightness, contrast, backend) = read_picture_features(
+            Some(&state),
+            PictureReadMode::DeferDdc,
+            || {
+                calls.borrow_mut().push("windows-sdr");
+                FeatureSnapshot {
+                    value: 0,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+            |code| {
+                calls.borrow_mut().push(if code == BRIGHTNESS_CODE {
+                    "ddc-brightness"
+                } else {
+                    "ddc-contrast"
+                });
+                FeatureSnapshot {
+                    value: 50,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+        );
+
+        assert!(calls.borrow().is_empty());
+        assert!(!brightness.available);
+        assert!(!contrast.available);
+        assert_eq!(backend, PictureBackend::Ddc);
+    }
+
+    #[test]
+    fn enabled_but_inactive_hdr_reads_ddc_picture_controls() {
+        let state = hdr_state(true, true, false, false);
+        let calls = RefCell::new(Vec::new());
+
+        let (_, _, backend) = read_picture_features(
+            Some(&state),
+            PictureReadMode::Full,
+            || {
+                calls.borrow_mut().push("windows-sdr");
+                FeatureSnapshot {
+                    value: 0,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+            |code| {
+                calls.borrow_mut().push(if code == BRIGHTNESS_CODE {
+                    "ddc-brightness"
+                } else {
+                    "ddc-contrast"
+                });
+                FeatureSnapshot {
+                    value: 50,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+        );
+
+        assert_eq!(*calls.borrow(), vec!["ddc-brightness", "ddc-contrast"]);
+        assert_eq!(backend, PictureBackend::Ddc);
+    }
+
+    #[test]
+    fn unknown_hdr_state_skips_all_picture_reads() {
+        let calls = RefCell::new(Vec::new());
+
+        let (brightness, contrast, backend) = read_picture_features(
+            None,
+            PictureReadMode::Full,
+            || {
+                calls.borrow_mut().push("windows-sdr");
+                FeatureSnapshot {
+                    value: 0,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+            |code| {
+                calls.borrow_mut().push(if code == BRIGHTNESS_CODE {
+                    "ddc-brightness"
+                } else {
+                    "ddc-contrast"
+                });
+                FeatureSnapshot {
+                    value: 0,
+                    maximum: 100,
+                    available: true,
+                }
+            },
+        );
+
+        assert!(calls.borrow().is_empty());
+        assert!(!brightness.available);
+        assert!(!contrast.available);
+        assert_eq!(backend, PictureBackend::Unavailable);
+    }
+
+    #[test]
+    fn ddc_picture_writes_fail_closed_when_hdr_state_is_active_or_unknown() {
+        let active = hdr_state(true, true, true, false);
+        let inactive = hdr_state(true, false, false, false);
+
+        assert!(validate_ddc_picture_write(BRIGHTNESS_CODE, Some(&active)).is_err());
+        assert!(validate_ddc_picture_write(CONTRAST_CODE, Some(&active)).is_err());
+        assert!(validate_ddc_picture_write(BRIGHTNESS_CODE, None).is_err());
+        assert!(validate_ddc_picture_write(BRIGHTNESS_CODE, Some(&inactive)).is_ok());
+        assert!(validate_ddc_picture_write(INPUT_CODE, None).is_ok());
+    }
+
+    #[test]
+    fn hdr_requests_are_dispatched_as_worker_tasks() {
+        let mut pending = PendingWorkerRequests::from(vec![WorkerRequest::SetHdr {
+            enabled: true,
+            use_cached_ddc_values: false,
+        }]);
+
+        assert_eq!(
+            pending.pop_next_task(),
+            Some(WorkerTask::SetHdr {
+                enabled: true,
+                use_cached_ddc_values: false,
+            })
         );
     }
 
@@ -989,7 +1499,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_selected_monitor_emits_a_fallback_status() {
+    fn missing_selected_monitor_reports_unavailability_without_fallback_claim() {
         let (event_tx, event_rx) = mpsc::channel();
         let mut runtime = WorkerRuntimeState {
             selected_monitor_key: Some("missing".into()),
@@ -1010,9 +1520,7 @@ mod tests {
         assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
         assert_eq!(
             event_rx.recv().unwrap(),
-            WorkerEvent::Status(
-                "Selected monitor is unavailable; using the first detected monitor".into()
-            )
+            WorkerEvent::Status("Selected monitor is unavailable".into())
         );
     }
 
@@ -1092,7 +1600,10 @@ mod tests {
         let mut device = RecordingWorkerDevice::default();
 
         execute_worker_task(
-            WorkerTask::SetHdr { enabled: true },
+            WorkerTask::SetHdr {
+                enabled: true,
+                use_cached_ddc_values: false,
+            },
             &mut device,
             &event_tx,
             &mut runtime,
@@ -1108,8 +1619,48 @@ mod tests {
             WorkerEvent::HdrUpdateFinished {
                 enabled: true,
                 error: None,
+                used_cached_ddc_values: false,
             }
         );
+    }
+
+    #[test]
+    fn cached_hdr_off_task_completes_before_full_picture_refresh() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut runtime = WorkerRuntimeState {
+            selected_monitor_key: Some("selected-monitor".into()),
+            consecutive_ddc_failures: 0,
+        };
+        let mut device = RecordingWorkerDevice::default();
+
+        execute_worker_task(
+            WorkerTask::SetHdr {
+                enabled: false,
+                use_cached_ddc_values: true,
+            },
+            &mut device,
+            &event_tx,
+            &mut runtime,
+        );
+
+        assert_eq!(
+            device.calls,
+            vec![
+                "hdr:selected-monitor:false",
+                "snapshot:selected-monitor:defer-ddc",
+                "snapshot:selected-monitor",
+            ]
+        );
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::HdrUpdateFinished {
+                enabled: false,
+                error: None,
+                used_cached_ddc_values: true,
+            }
+        );
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
     }
 
     #[test]
@@ -1125,7 +1676,10 @@ mod tests {
         };
 
         execute_worker_task(
-            WorkerTask::SetHdr { enabled: true },
+            WorkerTask::SetHdr {
+                enabled: true,
+                use_cached_ddc_values: false,
+            },
             &mut device,
             &event_tx,
             &mut runtime,
@@ -1137,6 +1691,103 @@ mod tests {
             WorkerEvent::HdrUpdateFinished {
                 enabled: true,
                 error: Some("HDR update failed: Selected monitor is unavailable".into()),
+                used_cached_ddc_values: false,
+            }
+        );
+    }
+
+    #[test]
+    fn failed_hdr_change_does_not_claim_cached_restoration() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut runtime = WorkerRuntimeState {
+            selected_monitor_key: Some("selected-monitor".into()),
+            consecutive_ddc_failures: 0,
+        };
+        let mut device = RecordingWorkerDevice {
+            hdr_error: Some("Windows rejected the change".into()),
+            ..Default::default()
+        };
+
+        execute_worker_task(
+            WorkerTask::SetHdr {
+                enabled: false,
+                use_cached_ddc_values: true,
+            },
+            &mut device,
+            &event_tx,
+            &mut runtime,
+        );
+
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::HdrUpdateFinished {
+                enabled: false,
+                error: Some("HDR update failed: Windows rejected the change".into()),
+                used_cached_ddc_values: false,
+            }
+        );
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn sdr_brightness_task_emits_confirmed_snapshot_before_completion() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut runtime = WorkerRuntimeState {
+            selected_monitor_key: Some("selected-monitor".into()),
+            consecutive_ddc_failures: 0,
+        };
+        let mut device = RecordingWorkerDevice::default();
+
+        execute_worker_task(
+            WorkerTask::SetSdrContentBrightness { percent: 61 },
+            &mut device,
+            &event_tx,
+            &mut runtime,
+        );
+
+        assert_eq!(
+            device.calls,
+            vec![
+                "sdr-brightness:selected-monitor:61",
+                "snapshot:selected-monitor"
+            ]
+        );
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::SdrContentBrightnessFinished {
+                requested_percent: 61,
+                error: None,
+            }
+        );
+    }
+
+    #[test]
+    fn failed_sdr_brightness_task_recovers_snapshot_before_error_completion() {
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut runtime = WorkerRuntimeState {
+            selected_monitor_key: Some("selected-monitor".into()),
+            consecutive_ddc_failures: 0,
+        };
+        let mut device = RecordingWorkerDevice {
+            sdr_brightness_error: Some("HDR is no longer active".into()),
+            ..Default::default()
+        };
+
+        execute_worker_task(
+            WorkerTask::SetSdrContentBrightness { percent: 61 },
+            &mut device,
+            &event_tx,
+            &mut runtime,
+        );
+
+        assert!(matches!(event_rx.recv().unwrap(), WorkerEvent::Snapshot(_)));
+        assert_eq!(
+            event_rx.recv().unwrap(),
+            WorkerEvent::SdrContentBrightnessFinished {
+                requested_percent: 61,
+                error: Some("SDR content brightness update failed: HDR is no longer active".into()),
             }
         );
     }
@@ -1150,7 +1801,11 @@ mod tests {
             Ok(())
         }
 
-        fn snapshot(&mut self, _selected_monitor_key: Option<&str>) -> DeviceSnapshot {
+        fn snapshot(
+            &mut self,
+            _selected_monitor_key: Option<&str>,
+            _picture_read_mode: PictureReadMode,
+        ) -> DeviceSnapshot {
             unreachable!("snapshot is not part of this test")
         }
 
@@ -1169,6 +1824,14 @@ mod tests {
             _enabled: bool,
         ) -> Result<(), String> {
             unreachable!("set_hdr_enabled is not part of this test")
+        }
+
+        fn set_sdr_content_brightness(
+            &mut self,
+            _selected_monitor_key: Option<&str>,
+            _percent: u32,
+        ) -> Result<(), String> {
+            unreachable!("set_sdr_content_brightness is not part of this test")
         }
 
         fn autostart_enabled(&self) -> bool {

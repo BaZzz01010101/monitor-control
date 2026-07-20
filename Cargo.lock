@@ -1172,6 +1172,7 @@ dependencies = [
  "global-hotkey",
  "image",
  "log",
+ "parking_lot",
  "raw-window-handle",
  "serde",
  "slint",
@@ -1180,6 +1181,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
  "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

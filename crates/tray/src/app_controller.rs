@@ -1,6 +1,8 @@
 use crate::persistence::PersistedSettings;
 use crate::value_controls::WriteThrottle;
+use dell_controller_core::DisplayMonitorHandle;
 use log::{debug, info};
+use std::collections::HashMap;
 
 pub const BRIGHTNESS_CODE: u8 = 0x10;
 pub const CONTRAST_CODE: u8 = 0x12;
@@ -109,11 +111,28 @@ pub enum WorkerRequest {
     RefreshAll,
     ReadSnapshot,
     RefreshAutostart,
-    SelectMonitor { key: String },
-    SetAutostart { enabled: bool, quiet: bool },
-    SetHdr { enabled: bool },
-    WriteFeature { code: u8, value: u32 },
-    SetInput { value: u32 },
+    SelectMonitor {
+        key: String,
+    },
+    SetAutostart {
+        enabled: bool,
+        quiet: bool,
+    },
+    SetHdr {
+        enabled: bool,
+        use_cached_ddc_values: bool,
+    },
+    SetSdrContentBrightness {
+        percent: u32,
+    },
+    CancelPictureWrites,
+    WriteFeature {
+        code: u8,
+        value: u32,
+    },
+    SetInput {
+        value: u32,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,6 +148,14 @@ pub struct FeatureSnapshot {
     pub available: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PictureBackend {
+    Ddc,
+    WindowsSdr,
+    #[default]
+    Unavailable,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MonitorSnapshot {
     pub monitor_title: String,
@@ -136,6 +163,9 @@ pub struct MonitorSnapshot {
     pub hdr_status: String,
     pub hdr_enabled: bool,
     pub hdr_available: bool,
+    pub hdr_active: bool,
+    pub picture_backend: PictureBackend,
+    pub advanced_color_monitor: Option<DisplayMonitorHandle>,
     pub diagnostic_status: String,
     pub monitor_choices: Vec<MonitorChoice>,
     pub selected_monitor_key: String,
@@ -155,6 +185,11 @@ pub enum WorkerEvent {
     },
     HdrUpdateFinished {
         enabled: bool,
+        error: Option<String>,
+        used_cached_ddc_values: bool,
+    },
+    SdrContentBrightnessFinished {
+        requested_percent: u32,
         error: Option<String>,
     },
     Status(String),
@@ -256,6 +291,18 @@ pub enum ControllerEffect {
     Worker(WorkerRequest),
 }
 
+#[derive(Clone, Debug, Default)]
+struct DdcPictureCache {
+    brightness: Option<FeatureState>,
+    contrast: Option<FeatureState>,
+}
+
+impl DdcPictureCache {
+    fn complete(&self) -> Option<(FeatureState, FeatureState)> {
+        Some((self.brightness.clone()?, self.contrast.clone()?))
+    }
+}
+
 #[derive(Debug)]
 pub struct AppController {
     state: UiState,
@@ -270,6 +317,18 @@ pub struct AppController {
     input_last_user_change_ms: Option<u64>,
     durable_selected_monitor_key: String,
     hdr_available: bool,
+    picture_backend: PictureBackend,
+    confirmed_brightness: FeatureState,
+    confirmed_contrast: FeatureState,
+    pending_windows_brightness_target: Option<u32>,
+    picture_cancel_pending: bool,
+    has_snapshot: bool,
+    hdr_active: bool,
+    ddc_picture_cache: HashMap<String, DdcPictureCache>,
+    restore_cached_ddc_requested: bool,
+    awaiting_ddc_restore_refresh: bool,
+    brightness_changed_during_restore_refresh: bool,
+    contrast_changed_during_restore_refresh: bool,
 }
 
 impl Default for AppController {
@@ -287,6 +346,18 @@ impl Default for AppController {
             input_last_user_change_ms: None,
             durable_selected_monitor_key: String::new(),
             hdr_available: false,
+            picture_backend: PictureBackend::Unavailable,
+            confirmed_brightness: FeatureState::default(),
+            confirmed_contrast: FeatureState::default(),
+            pending_windows_brightness_target: None,
+            picture_cancel_pending: false,
+            has_snapshot: false,
+            hdr_active: false,
+            ddc_picture_cache: HashMap::new(),
+            restore_cached_ddc_requested: false,
+            awaiting_ddc_restore_refresh: false,
+            brightness_changed_during_restore_refresh: false,
+            contrast_changed_during_restore_refresh: false,
         }
     }
 }
@@ -404,9 +475,21 @@ impl AppController {
                 if !self.state.hdr_toggle_enabled || enabled == self.state.hdr_enabled {
                     return Vec::new();
                 }
+                self.cancel_picture_writes();
+                self.picture_cancel_pending = false;
+                self.reset_ddc_restore_state();
+                let use_cached_ddc_values = !enabled && self.current_ddc_cache().is_some();
+                self.restore_cached_ddc_requested = use_cached_ddc_values;
                 self.state.hdr_pending = true;
                 self.state.hdr_toggle_enabled = false;
-                vec![ControllerEffect::Worker(WorkerRequest::SetHdr { enabled })]
+                self.apply_picture_availability();
+                vec![
+                    ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+                    ControllerEffect::Worker(WorkerRequest::SetHdr {
+                        enabled,
+                        use_cached_ddc_values,
+                    }),
+                ]
             }
             UiAction::DeactivateShortcutCapture(target) => self.deactivate_shortcut_capture(target),
             UiAction::PreviewShortcut { target, preview } => self.preview_shortcut(target, preview),
@@ -426,16 +509,19 @@ impl AppController {
 
     pub fn flush_pending(&mut self, now_ms: u64) -> Vec<ControllerEffect> {
         let mut effects = Vec::new();
+        if self.picture_cancel_pending {
+            self.picture_cancel_pending = false;
+            effects.push(ControllerEffect::Worker(WorkerRequest::CancelPictureWrites));
+        }
         for feature in [FeatureId::Brightness, FeatureId::Contrast] {
             let send = match feature {
                 FeatureId::Brightness => self.brightness_throttle.tick(now_ms),
                 FeatureId::Contrast => self.contrast_throttle.tick(now_ms),
             };
             if let Some(value) = send {
-                effects.push(ControllerEffect::Worker(WorkerRequest::WriteFeature {
-                    code: feature.to_vcp_code(),
-                    value,
-                }));
+                if let Some(request) = self.picture_write_request(feature, value) {
+                    effects.push(ControllerEffect::Worker(request));
+                }
             }
         }
         if let Some(value) = self.input_throttle.tick(now_ms) {
@@ -454,14 +540,39 @@ impl AppController {
                     self.state.status_text = status;
                 }
             }
-            WorkerEvent::HdrUpdateFinished { enabled, error } => {
+            WorkerEvent::HdrUpdateFinished {
+                enabled,
+                error,
+                used_cached_ddc_values,
+            } => {
+                self.awaiting_ddc_restore_refresh = error.is_none() && used_cached_ddc_values;
+                self.brightness_changed_during_restore_refresh = false;
+                self.contrast_changed_during_restore_refresh = false;
+                self.restore_cached_ddc_requested = false;
                 self.state.hdr_pending = false;
                 self.state.hdr_toggle_enabled = self.hdr_available;
+                self.apply_picture_availability();
                 self.state.status_text = match error {
                     Some(error) => error,
                     None if enabled => "Windows HDR enabled".into(),
                     None => "Windows HDR disabled".into(),
                 };
+            }
+            WorkerEvent::SdrContentBrightnessFinished {
+                requested_percent,
+                error,
+            } => {
+                if self.pending_windows_brightness_target == Some(requested_percent) {
+                    self.pending_windows_brightness_target = None;
+                    self.brightness_optimistic_value = None;
+                    self.brightness_last_user_change_ms = None;
+                    self.brightness_throttle.reset();
+                    self.state.brightness = self.confirmed_brightness.clone();
+                    self.apply_picture_availability();
+                }
+                if let Some(error) = error {
+                    self.state.status_text = error;
+                }
             }
             WorkerEvent::Status(message) => {
                 self.state.status_text = message;
@@ -493,6 +604,8 @@ impl AppController {
         debug!("feature {feature:?}: set to {clamped}");
         *self.feature_optimistic_value_mut(feature) = Some(clamped);
         *self.feature_last_user_change_mut(feature) = Some(now_ms);
+        self.track_restore_refresh_edit(feature);
+        self.track_windows_brightness_target(feature, clamped);
 
         let send_now = match feature {
             FeatureId::Brightness => self.brightness_throttle.schedule(now_ms, clamped),
@@ -500,12 +613,8 @@ impl AppController {
         };
 
         send_now
-            .map(|value| {
-                ControllerEffect::Worker(WorkerRequest::WriteFeature {
-                    code: feature.to_vcp_code(),
-                    value,
-                })
-            })
+            .and_then(|value| self.picture_write_request(feature, value))
+            .map(ControllerEffect::Worker)
             .into_iter()
             .collect()
     }
@@ -530,6 +639,8 @@ impl AppController {
         debug!("feature {feature:?}: set to {clamped}");
         *self.feature_optimistic_value_mut(feature) = Some(clamped);
         *self.feature_last_user_change_mut(feature) = Some(now_ms);
+        self.track_restore_refresh_edit(feature);
+        self.track_windows_brightness_target(feature, clamped);
 
         let value = match feature {
             FeatureId::Brightness => self.brightness_throttle.schedule(now_ms, clamped),
@@ -537,12 +648,8 @@ impl AppController {
         };
 
         value
-            .map(|value| {
-                ControllerEffect::Worker(WorkerRequest::WriteFeature {
-                    code: feature.to_vcp_code(),
-                    value,
-                })
-            })
+            .and_then(|value| self.picture_write_request(feature, value))
+            .map(ControllerEffect::Worker)
             .into_iter()
             .collect()
     }
@@ -611,10 +718,15 @@ impl AppController {
     fn select_monitor(&mut self, key: String) -> Vec<ControllerEffect> {
         self.state.selected_monitor_key = key.clone();
         self.durable_selected_monitor_key = key.clone();
-        self.clear_optimistic_values();
-        vec![ControllerEffect::Worker(WorkerRequest::SelectMonitor {
-            key,
-        })]
+        self.cancel_picture_writes();
+        self.reset_ddc_restore_state();
+        self.picture_cancel_pending = false;
+        self.picture_backend = PictureBackend::Unavailable;
+        self.apply_picture_availability();
+        vec![
+            ControllerEffect::Worker(WorkerRequest::CancelPictureWrites),
+            ControllerEffect::Worker(WorkerRequest::SelectMonitor { key }),
+        ]
     }
 
     fn shortcut_state(&self, target: ShortcutTarget) -> &ShortcutFieldState {
@@ -642,9 +754,22 @@ impl AppController {
 
     fn apply_snapshot(&mut self, snapshot: MonitorSnapshot, now_ms: u64) {
         let has_monitor = snapshot.has_monitor;
-        if !has_monitor {
-            self.clear_optimistic_values();
+        let had_monitor = !self.state.no_monitor;
+        let picture_context_changed = self.has_snapshot
+            && (self.picture_backend != snapshot.picture_backend
+                || self.hdr_active != snapshot.hdr_active
+                || self.state.selected_monitor_key != snapshot.selected_monitor_key
+                || had_monitor != has_monitor);
+        if picture_context_changed {
+            self.cancel_picture_writes();
+            self.picture_cancel_pending = true;
+            if !self.state.hdr_pending {
+                self.reset_ddc_restore_state();
+            }
         }
+        self.has_snapshot = true;
+        self.picture_backend = snapshot.picture_backend;
+        self.hdr_active = snapshot.hdr_active;
 
         self.state.monitor_title = snapshot.monitor_title;
         self.state.hdr_status = snapshot.hdr_status;
@@ -656,8 +781,8 @@ impl AppController {
         if !snapshot.diagnostic_status.is_empty() {
             self.state.status_text = snapshot.diagnostic_status;
         }
-        self.apply_feature_snapshot(FeatureId::Brightness, snapshot.brightness, now_ms);
-        self.apply_feature_snapshot(FeatureId::Contrast, snapshot.contrast, now_ms);
+        self.apply_picture_snapshot(snapshot.brightness, snapshot.contrast, now_ms);
+        self.apply_picture_availability();
         if self.input_recently_changed(now_ms) {
             self.state.input_enabled = snapshot.input_enabled;
         } else {
@@ -667,6 +792,92 @@ impl AppController {
             self.input_last_user_change_ms = None;
         }
         self.state.no_monitor = !has_monitor;
+    }
+
+    fn apply_picture_snapshot(
+        &mut self,
+        brightness: FeatureSnapshot,
+        contrast: FeatureSnapshot,
+        now_ms: u64,
+    ) {
+        match self.picture_backend {
+            PictureBackend::Ddc => {
+                if self.state.hdr_pending
+                    && self.restore_cached_ddc_requested
+                    && !brightness.available
+                    && !contrast.available
+                    && self.restore_current_ddc_cache()
+                {
+                    return;
+                }
+
+                let preserve_brightness = self.awaiting_ddc_restore_refresh
+                    && self.brightness_changed_during_restore_refresh;
+                let preserve_contrast = self.awaiting_ddc_restore_refresh
+                    && self.contrast_changed_during_restore_refresh;
+                let mapped_brightness = Self::map_feature(brightness.clone());
+                let mapped_contrast = Self::map_feature(contrast.clone());
+                self.confirmed_brightness = mapped_brightness.clone();
+                self.confirmed_contrast = mapped_contrast.clone();
+
+                if brightness.available && !preserve_brightness {
+                    self.cache_current_ddc_feature(FeatureId::Brightness, mapped_brightness);
+                }
+                if contrast.available && !preserve_contrast {
+                    self.cache_current_ddc_feature(FeatureId::Contrast, mapped_contrast);
+                }
+
+                self.apply_brightness_snapshot(brightness, now_ms, preserve_brightness);
+                self.apply_feature_snapshot(
+                    FeatureId::Contrast,
+                    contrast,
+                    now_ms,
+                    preserve_contrast,
+                );
+
+                if self.awaiting_ddc_restore_refresh {
+                    self.awaiting_ddc_restore_refresh = false;
+                    self.brightness_changed_during_restore_refresh = false;
+                    self.contrast_changed_during_restore_refresh = false;
+                }
+            }
+            PictureBackend::WindowsSdr => {
+                self.confirmed_brightness = Self::map_feature(brightness.clone());
+                self.apply_brightness_snapshot(brightness, now_ms, false);
+
+                if let Some((_, cached_contrast)) = self.current_ddc_cache() {
+                    self.confirmed_contrast = cached_contrast.clone();
+                    self.state.contrast = cached_contrast;
+                } else {
+                    self.confirmed_contrast = FeatureState::default();
+                    self.state.contrast = FeatureState::default();
+                }
+            }
+            PictureBackend::Unavailable => {
+                self.confirmed_brightness = FeatureState::default();
+                self.confirmed_contrast = FeatureState::default();
+                self.apply_brightness_snapshot(brightness, now_ms, false);
+                self.apply_feature_snapshot(FeatureId::Contrast, contrast, now_ms, false);
+            }
+        }
+    }
+
+    fn apply_brightness_snapshot(
+        &mut self,
+        snapshot: FeatureSnapshot,
+        now_ms: u64,
+        preserve_value: bool,
+    ) {
+        if self.picture_backend == PictureBackend::WindowsSdr
+            && self
+                .pending_windows_brightness_target
+                .is_some_and(|target| !snapshot.available || snapshot.value != target)
+        {
+            self.state.brightness.maximum = self.confirmed_brightness.maximum;
+            return;
+        }
+
+        self.apply_feature_snapshot(FeatureId::Brightness, snapshot, now_ms, preserve_value);
     }
 
     fn map_feature(snapshot: FeatureSnapshot) -> FeatureState {
@@ -687,8 +898,9 @@ impl AppController {
         feature: FeatureId,
         snapshot: FeatureSnapshot,
         now_ms: u64,
+        preserve_value: bool,
     ) {
-        if self.feature_recently_changed(feature, now_ms) {
+        if preserve_value || self.feature_recently_changed(feature, now_ms) {
             if snapshot.available {
                 let mapped = Self::map_feature(snapshot);
                 let state = self.feature_state_mut(feature);
@@ -724,6 +936,109 @@ impl AppController {
         self.brightness_last_user_change_ms = None;
         self.contrast_last_user_change_ms = None;
         self.input_last_user_change_ms = None;
+    }
+
+    fn current_ddc_cache(&self) -> Option<(FeatureState, FeatureState)> {
+        self.ddc_picture_cache
+            .get(&self.state.selected_monitor_key)?
+            .complete()
+    }
+
+    fn cache_current_ddc_feature(&mut self, feature: FeatureId, state: FeatureState) {
+        if self.state.selected_monitor_key.is_empty() {
+            return;
+        }
+
+        let cache = self
+            .ddc_picture_cache
+            .entry(self.state.selected_monitor_key.clone())
+            .or_default();
+        match feature {
+            FeatureId::Brightness => cache.brightness = Some(state),
+            FeatureId::Contrast => cache.contrast = Some(state),
+        }
+    }
+
+    fn restore_current_ddc_cache(&mut self) -> bool {
+        let Some((brightness, contrast)) = self.current_ddc_cache() else {
+            return false;
+        };
+        self.confirmed_brightness = brightness.clone();
+        self.confirmed_contrast = contrast.clone();
+        self.state.brightness = brightness;
+        self.state.contrast = contrast;
+        true
+    }
+
+    fn track_restore_refresh_edit(&mut self, feature: FeatureId) {
+        if !self.awaiting_ddc_restore_refresh || self.picture_backend != PictureBackend::Ddc {
+            return;
+        }
+        match feature {
+            FeatureId::Brightness => self.brightness_changed_during_restore_refresh = true,
+            FeatureId::Contrast => self.contrast_changed_during_restore_refresh = true,
+        }
+    }
+
+    fn reset_ddc_restore_state(&mut self) {
+        self.restore_cached_ddc_requested = false;
+        self.awaiting_ddc_restore_refresh = false;
+        self.brightness_changed_during_restore_refresh = false;
+        self.contrast_changed_during_restore_refresh = false;
+    }
+
+    fn cancel_picture_writes(&mut self) {
+        self.brightness_throttle.reset();
+        self.contrast_throttle.reset();
+        self.brightness_optimistic_value = None;
+        self.contrast_optimistic_value = None;
+        self.brightness_last_user_change_ms = None;
+        self.contrast_last_user_change_ms = None;
+        self.pending_windows_brightness_target = None;
+    }
+
+    fn picture_write_request(&mut self, feature: FeatureId, value: u32) -> Option<WorkerRequest> {
+        match (self.picture_backend, feature) {
+            (PictureBackend::Ddc, _) => Some(WorkerRequest::WriteFeature {
+                code: feature.to_vcp_code(),
+                value,
+            }),
+            (PictureBackend::WindowsSdr, FeatureId::Brightness) => {
+                self.pending_windows_brightness_target = Some(value);
+                Some(WorkerRequest::SetSdrContentBrightness { percent: value })
+            }
+            (PictureBackend::WindowsSdr, FeatureId::Contrast)
+            | (PictureBackend::Unavailable, _) => None,
+        }
+    }
+
+    fn track_windows_brightness_target(&mut self, feature: FeatureId, value: u32) {
+        if self.picture_backend == PictureBackend::WindowsSdr && feature == FeatureId::Brightness {
+            self.pending_windows_brightness_target = Some(value);
+        }
+    }
+
+    fn apply_picture_availability(&mut self) {
+        if self.state.hdr_pending {
+            self.state.brightness.enabled = false;
+            self.state.contrast.enabled = false;
+            return;
+        }
+
+        match self.picture_backend {
+            PictureBackend::Ddc => {
+                self.state.brightness.enabled = self.confirmed_brightness.enabled;
+                self.state.contrast.enabled = self.confirmed_contrast.enabled;
+            }
+            PictureBackend::WindowsSdr => {
+                self.state.brightness.enabled = self.confirmed_brightness.enabled;
+                self.state.contrast.enabled = false;
+            }
+            PictureBackend::Unavailable => {
+                self.state.brightness.enabled = false;
+                self.state.contrast.enabled = false;
+            }
+        }
     }
 
     fn feature_last_user_change(&self, feature: FeatureId) -> Option<u64> {

@@ -76,6 +76,11 @@ impl WriteThrottle {
         value
     }
 
+    pub fn reset(&mut self) {
+        self.pending_value = None;
+        self.last_sent_at_ms = None;
+    }
+
     pub fn has_pending(&self) -> bool {
         self.pending_value.is_some()
     }

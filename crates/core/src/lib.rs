@@ -11,9 +11,11 @@ pub mod windows_backend;
 
 pub use capabilities::Capabilities;
 pub use ddc::{CommandQueue, DdcBackend, DdcError, RetryPolicy, VcpCode, VcpFeature, VcpValue};
-pub use hdr::HdrState;
+pub use hdr::{HdrState, SdrContentBrightness};
 pub use profile::{
     ControlDefinition, ControlKind, KvmRoute, MonitorId, MonitorProfile, PhysicalMonitor,
 };
 pub use snapshot::{Snapshot, SnapshotDiff};
-pub use windows_backend::{enumerate_monitors, WindowsDdcBackend, WindowsMonitor};
+pub use windows_backend::{
+    enumerate_monitors, DisplayMonitorHandle, WindowsDdcBackend, WindowsMonitor,
+};

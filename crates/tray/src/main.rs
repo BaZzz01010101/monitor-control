@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::Context;
 use dell_controller_tray::{
+    advanced_color_watcher::AdvancedColorWatcher,
     app_controller::{
         AppController, ControllerEffect, ShortcutTarget, UiAction, UiPane, WorkerEvent,
         WorkerRequest,
@@ -52,6 +53,7 @@ struct AppRuntime {
     controller: AppController,
     ui: UiBridge,
     worker: WorkerHandle,
+    advanced_color_watcher: Option<AdvancedColorWatcher>,
     worker_events: Receiver<WorkerEvent>,
     ui_action_tx: Sender<UiAction>,
     ui_actions: Receiver<UiAction>,
@@ -88,6 +90,16 @@ impl AppRuntime {
 
         let (worker_event_tx, worker_events) = mpsc::channel();
         let worker = spawn_worker(worker_event_tx);
+        let advanced_color_watcher = match AdvancedColorWatcher::new(worker.clone()) {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                log_or_stderr(
+                    logger.as_ref(),
+                    format!("advanced-color event synchronization unavailable: {error}"),
+                );
+                None
+            }
+        };
         let tray = match launch_mode {
             LaunchMode::Normal => Some(TrayShell::new()?),
             LaunchMode::DebugUi => None,
@@ -105,6 +117,7 @@ impl AppRuntime {
             controller: AppController::default(),
             ui,
             worker,
+            advanced_color_watcher,
             worker_events,
             ui_action_tx,
             ui_actions: ui_action_rx,
@@ -128,6 +141,18 @@ impl AppRuntime {
         runtime.borrow_mut().hydrate_from_persistence();
         Self::start_event_pump(runtime.clone());
         Ok(runtime)
+    }
+
+    fn shutdown(&mut self) {
+        let Some(mut watcher) = self.advanced_color_watcher.take() else {
+            return;
+        };
+        if let Err(error) = watcher.shutdown() {
+            log_or_stderr(
+                self.logger.as_ref(),
+                format!("advanced-color event synchronization shutdown failed: {error}"),
+            );
+        }
     }
 
     fn bootstrap(runtime: Rc<RefCell<Self>>) -> anyhow::Result<()> {
@@ -222,6 +247,15 @@ impl AppRuntime {
 
         while let Ok(event) = self.worker_events.try_recv() {
             let should_persist_settings = matches!(event, WorkerEvent::AutostartState { .. });
+            if let WorkerEvent::Snapshot(snapshot) = &event {
+                if let Some(watcher) = self.advanced_color_watcher.as_mut() {
+                    if let Err(error) = watcher.update_target(snapshot.advanced_color_monitor) {
+                        self.log(format!(
+                            "advanced-color event synchronization unavailable: {error}"
+                        ));
+                    }
+                }
+            }
             self.controller.apply_worker_event(event, now);
             if should_persist_settings {
                 self.persist_settings();
@@ -600,8 +634,10 @@ fn run_app(logger: Option<FileLogger>) -> anyhow::Result<()> {
 
     let runtime = AppRuntime::new(launch_mode, debug_output_path, logger)
         .context("failed to initialize tray app")?;
-    AppRuntime::bootstrap(runtime).context("failed to bootstrap tray app")?;
-    slint::run_event_loop_until_quit().context("failed to run Slint event loop")?;
+    AppRuntime::bootstrap(runtime.clone()).context("failed to bootstrap tray app")?;
+    let event_loop_result = slint::run_event_loop_until_quit();
+    runtime.borrow_mut().shutdown();
+    event_loop_result.context("failed to run Slint event loop")?;
     info!("dell-controller-tray stopped");
     Ok(())
 }
