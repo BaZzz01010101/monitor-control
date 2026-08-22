@@ -14,14 +14,14 @@ global-hotkey = { git = "https://github.com/BaZzz01010101/global-hotkey.git", re
 image = { version = "0.25", default-features = false, features = ["png"] }
 raw-window-handle = "0.6"
 serde.workspace = true
-slint = { version = "1.16.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
+slint = { version = "1.17.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
 toml.workspace = true
 tray-icon = "0.23.1"
 windows = { workspace = true, features = ["Foundation", "Graphics_Display", "System", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-core = "0.62"
 
 [build-dependencies]
-slint-build = "1.16.1"
+slint-build = "1.17.1"
 
 [dev-dependencies]
 tempfile.workspace = true

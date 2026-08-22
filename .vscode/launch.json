@@ -18,6 +18,26 @@
       "preLaunchTask": "cargo build outputs"
     },
     {
+      "name": "Tray: Dell Controller (Slint MCP)",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\target\\debug\\dell-controller-tray.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "externalTerminal",
+      "environment": [
+        {
+          "name": "RUST_LOG",
+          "value": "debug"
+        },
+        {
+          "name": "SLINT_MCP_PORT",
+          "value": "9315"
+        }
+      ],
+      "preLaunchTask": "cargo build tray MCP"
+    },
+    {
       "name": "CLI: monitors",
       "type": "cppvsdbg",
       "request": "launch",

@@ -33,6 +33,26 @@
       "problemMatcher": ["$rustc"]
     },
     {
+      "label": "cargo build tray MCP",
+      "type": "shell",
+      "command": "cargo",
+      "args": [
+        "build",
+        "-p",
+        "dell-controller-tray",
+        "--features",
+        "slint/mcp"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}",
+          "SLINT_EMIT_DEBUG_INFO": "1"
+        }
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
       "label": "cargo build tray",
       "type": "shell",
       "command": "cargo",
